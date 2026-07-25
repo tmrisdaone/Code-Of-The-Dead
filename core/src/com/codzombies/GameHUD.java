@@ -5,6 +5,7 @@ import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
+import com.badlogic.gdx.graphics.g2d.GlyphLayout;
 import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.math.MathUtils;
@@ -14,8 +15,8 @@ import com.badlogic.gdx.math.Vector3;
  * 2D HUD overlay rendering: ammo counter, points, health, round announcements,
  * virtual joystick areas, touch buttons, crosshair, damage vignette.
  *
- * All rendering uses pre-allocated ShapeRenderer and SpriteBatch —
- * no texture/object creation in render().
+ * CRITICAL: All ShapeRenderer drawing must complete before SpriteBatch begins.
+ * SpriteBatch.begin() inside a ShapeRenderer.begin()/end() block will crash.
  */
 public class GameHUD {
 
@@ -24,6 +25,7 @@ public class GameHUD {
     private final SpriteBatch  batch;
     private final ShapeRenderer shapes;
     private final BitmapFont   font;
+    private final GlyphLayout  layout; // for accurate text measurement
 
     // ── HUD dimensions (set from viewport) ───────────────────
     private float width;
@@ -58,7 +60,6 @@ public class GameHUD {
     private float interactBtnX, interactBtnY;
 
     // ── Touch input state (read by PlayerController) ─────────
-    // These are set via the touch callback methods called from the game screen.
     public boolean touchLeftActive   = false;
     public float   touchLeftX        = 0f;
     public float   touchLeftY        = 0f;
@@ -89,6 +90,7 @@ public class GameHUD {
         batch  = new SpriteBatch();
         shapes = new ShapeRenderer();
         font   = new BitmapFont();
+        layout = new GlyphLayout();
 
         font.getData().setScale(1.2f);
 
@@ -101,41 +103,44 @@ public class GameHUD {
         hudCam.setToOrtho(false, w, h);
         hudCam.update();
 
-        // Compute button positions (right side)
         float rightEdge = w - BUTTON_PAD;
         float bottom    = BUTTON_PAD;
 
-        reloadBtnX = rightEdge - BUTTON_SIZE - BUTTON_PAD;
-        reloadBtnY = bottom + BUTTON_SIZE + BUTTON_PAD;
-        switchBtnX = reloadBtnX - BUTTON_SIZE - BUTTON_PAD;
-        switchBtnY = reloadBtnY;
-
-        fireBtnX = rightEdge;
-        fireBtnY = bottom;
-        adsBtnX  = rightEdge - BUTTON_SIZE - BUTTON_PAD;
-        adsBtnY  = bottom;
-
-        interactBtnX = rightEdge;
-        interactBtnY = bottom + BUTTON_SIZE + BUTTON_PAD;
+        reloadBtnX    = rightEdge - BUTTON_SIZE - BUTTON_PAD;
+        reloadBtnY    = bottom + BUTTON_SIZE + BUTTON_PAD;
+        switchBtnX    = reloadBtnX - BUTTON_SIZE - BUTTON_PAD;
+        switchBtnY    = reloadBtnY;
+        fireBtnX      = rightEdge;
+        fireBtnY      = bottom;
+        adsBtnX       = rightEdge - BUTTON_SIZE - BUTTON_PAD;
+        adsBtnY       = bottom;
+        interactBtnX  = rightEdge;
+        interactBtnY  = bottom + BUTTON_SIZE + BUTTON_PAD;
     }
 
     // ── Main render ──────────────────────────────────────────
+    // PHASE 1: All ShapeRenderer drawing
+    // PHASE 2: All SpriteBatch + font drawing
+    // NEVER interleave them!
     public void render(float dt) {
         Gdx.gl.glEnable(GL20.GL_BLEND);
         Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
 
         hudCam.update();
-        batch.setProjectionMatrix(hudCam.combined);
         shapes.setProjectionMatrix(hudCam.combined);
 
+        // ═══════ PHASE 1: SHAPES ═══════
         shapes.begin(ShapeRenderer.ShapeType.Filled);
         drawJoysticks();
-        drawButtons();
+        drawButtonShapes();
         drawCrosshair();
         drawDamageVignette(dt);
         shapes.end();
 
+        // ═══════ PHASE 2: TEXT ═══════
+        batch.setProjectionMatrix(hudCam.combined);
         batch.begin();
+        drawButtonLabels();
         drawHUDText();
         drawRoundAnnouncement(dt);
         batch.end();
@@ -149,7 +154,6 @@ public class GameHUD {
         float x = screenX;
         float y = screenY; // already bottom-up from LibGDX
 
-        // Left joystick
         if (x < width / 2f) {
             leftTouchId     = pointer;
             touchLeftActive = true;
@@ -159,7 +163,6 @@ public class GameHUD {
             return true;
         }
 
-        // Right side: check buttons
         if (inRect(x, y, fireBtnX, fireBtnY, BUTTON_SIZE, BUTTON_SIZE)) {
             fireTouchId = pointer;
             player.firePressed = true;
@@ -183,7 +186,6 @@ public class GameHUD {
             return true;
         }
 
-        // Right drag area (camera look)
         rightTouchId  = pointer;
         touchRightActive = true;
         touchRightX = x;
@@ -210,7 +212,6 @@ public class GameHUD {
             return true;
         }
 
-        // Fire auto-fire: if holding fire button and auto weapon
         if (pointer == fireTouchId) {
             Weapon wep = weaponSystem.getActiveWeapon();
             if (wep != null && wep.isAutomatic) {
@@ -260,10 +261,11 @@ public class GameHUD {
         damageAlpha = 0.6f;
     }
 
-    // ── Private rendering ───────────────────────────────────
+    // ═════════════════════════════════════════════════════════
+    //  PHASE 1: Shape drawing (called inside shapes.begin/end)
+    // ═════════════════════════════════════════════════════════
 
     private void drawJoysticks() {
-        // Left joystick base
         float lx = JOYSTICK_MARGIN + JOYSTICK_RADIUS;
         float ly = JOYSTICK_MARGIN + JOYSTICK_RADIUS;
 
@@ -279,40 +281,30 @@ public class GameHUD {
             );
         }
 
-        // Right joystick area indicator (subtle)
         float rx = width - JOYSTICK_MARGIN - JOYSTICK_RADIUS;
         float ry = height - JOYSTICK_MARGIN - JOYSTICK_RADIUS;
         shapes.setColor(0.2f, 0.2f, 0.2f, 0.2f);
         shapes.circle(rx, ry, JOYSTICK_RADIUS);
     }
 
-    private void drawButtons() {
-        // Semi-transparent button backgrounds
-        drawButton(fireBtnX, fireBtnY, BUTTON_SIZE, "FIRE",  1f, 0.2f, 0.2f);
-        drawButton(adsBtnX,  adsBtnY,  BUTTON_SIZE, "ADS",   0.2f, 0.5f, 1f);
-        drawButton(reloadBtnX, reloadBtnY, BUTTON_SIZE, "R",  0.5f, 0.5f, 0.5f);
-        drawButton(switchBtnX, switchBtnY, BUTTON_SIZE, "SW", 0.5f, 0.3f, 0.1f);
-        drawButton(interactBtnX, interactBtnY, BUTTON_SIZE, "I", 0.3f, 0.8f, 0.3f);
+    /** Draw button rectangles only — labels are drawn in Phase 2. */
+    private void drawButtonShapes() {
+        drawBtnBg(fireBtnX,    fireBtnY,    1f, 0.2f, 0.2f);
+        drawBtnBg(adsBtnX,     adsBtnY,     0.2f, 0.5f, 1f);
+        drawBtnBg(reloadBtnX,  reloadBtnY,  0.5f, 0.5f, 0.5f);
+        drawBtnBg(switchBtnX,  switchBtnY,  0.5f, 0.3f, 0.1f);
+        drawBtnBg(interactBtnX, interactBtnY, 0.3f, 0.8f, 0.3f);
     }
 
-    private void drawButton(float bx, float by, float size, String label,
-                            float r, float g, float b) {
+    private void drawBtnBg(float bx, float by, float r, float g, float b) {
+        // Filled background
         shapes.setColor(r, g, b, 0.5f);
-        shapes.rect(bx, by, size, size);
-
-        // Button border
+        shapes.rect(bx, by, BUTTON_SIZE, BUTTON_SIZE);
+        // Border
         shapes.set(ShapeRenderer.ShapeType.Line);
         shapes.setColor(r, g, b, 0.8f);
-        shapes.rect(bx, by, size, size);
+        shapes.rect(bx, by, BUTTON_SIZE, BUTTON_SIZE);
         shapes.set(ShapeRenderer.ShapeType.Filled);
-
-        // Label
-        batch.begin();
-        font.setColor(1f, 1f, 1f, 0.9f);
-        float textX = bx + size / 2f - font.getRegion().getRegionWidth() * 0.3f;
-        float textY = by + size / 2f + font.getCapHeight() / 2f;
-        font.draw(batch, label, textX, textY);
-        batch.end();
     }
 
     private void drawCrosshair() {
@@ -320,21 +312,15 @@ public class GameHUD {
         float cy = height / 2f;
 
         shapes.setColor(1f, 1f, 1f, 0.8f);
-        // Top
         shapes.rect(cx - 1f, cy + CROSSHAIR_GAP, 2f, CROSSHAIR_SIZE);
-        // Bottom
         shapes.rect(cx - 1f, cy - CROSSHAIR_GAP - CROSSHAIR_SIZE, 2f, CROSSHAIR_SIZE);
-        // Left
         shapes.rect(cx - CROSSHAIR_GAP - CROSSHAIR_SIZE, cy - 1f, CROSSHAIR_SIZE, 2f);
-        // Right
         shapes.rect(cx + CROSSHAIR_GAP, cy - 1f, CROSSHAIR_SIZE, 2f);
-        // Center dot
         shapes.circle(cx, cy, 1.5f);
     }
 
     private void drawDamageVignette(float dt) {
         if (damageAlpha > 0f) {
-            // Red vignette overlay
             shapes.setColor(1f, 0f, 0f, damageAlpha * 0.5f);
             shapes.rect(0f, 0f, width, height);
             damageAlpha -= dt * 2f;
@@ -342,108 +328,98 @@ public class GameHUD {
         }
     }
 
+    // ═════════════════════════════════════════════════════════
+    //  PHASE 2: Text drawing (called inside batch.begin/end)
+    // ═════════════════════════════════════════════════════════
+
+    /** Draw button text labels. */
+    private void drawButtonLabels() {
+        font.setColor(1f, 1f, 1f, 0.9f);
+        drawBtnLabel(fireBtnX,    fireBtnY,    "FIRE");
+        drawBtnLabel(adsBtnX,     adsBtnY,     "ADS");
+        drawBtnLabel(reloadBtnX,  reloadBtnY,  "R");
+        drawBtnLabel(switchBtnX,  switchBtnY,  "SW");
+        drawBtnLabel(interactBtnX, interactBtnY, "I");
+    }
+
+    private void drawBtnLabel(float bx, float by, String label) {
+        layout.setText(font, label);
+        float textX = bx + (BUTTON_SIZE - layout.width) / 2f;
+        float textY = by + (BUTTON_SIZE + layout.height) / 2f;
+        font.draw(batch, label, textX, textY);
+    }
+
     private void drawHUDText() {
         font.setColor(1f, 1f, 1f, 1f);
 
-        // ── Health bar (top-left) ──
-        float healthPct = player.health / player.healthMax;
-        String healthColor = healthPct > 0.5f ? "[GREEN]" :
-                healthPct > 0.25f ? "[YELLOW]" : "[RED]";
         font.draw(batch, "HP: " + (int)player.health, 12f, height - 12f);
-
-        // ── Points (top-right) ──
         font.draw(batch, "Points: " + player.points, width - 160f, height - 12f);
-
-        // ── Round (top-center) ──
         font.draw(batch, "Round: " + zombieManager.getCurrentRound(),
                 width / 2f - 40f, height - 12f);
 
-        // ── Ammo (bottom-center) ──
         Weapon wep = weaponSystem.getActiveWeapon();
         if (wep != null) {
             String ammoText = wep.currentMag + " / " + wep.currentReserve;
-            // Reloading indicator
-            if (weaponSystem.isReloading) {
-                ammoText += " [RELOADING]";
-            }
+            if (weaponSystem.isReloading) ammoText += " [RELOADING]";
             font.draw(batch, ammoText, width / 2f - 30f, 40f);
-
-            // Weapon name
             font.draw(batch, wep.name, width / 2f - 30f, 60f);
         }
 
-        // ── Zombie counter ──
-        String zombieText = "Zombies: " + zombieManager.getZombieCount();
-        font.draw(batch, zombieText, 12f, 40f);
-
-        // ── Kills ──
+        font.draw(batch, "Zombies: " + zombieManager.getZombieCount(), 12f, 40f);
         font.draw(batch, "Kills: " + player.zombieKills, 12f, 60f);
 
-        // ── Interaction prompt ──
         drawInteractionPrompts();
     }
 
     private void drawInteractionPrompts() {
-        // Door prompt
         for (int i = 0; i < mapManager.doorCount; i++) {
             MapManager.Door d = mapManager.doors[i];
             if (d.isOpen) continue;
             float dx = (d.tilesX * Constants.TILE_SIZE + Constants.TILE_SIZE / 2f) - player.position.x;
             float dz = (d.tilesY * Constants.TILE_SIZE + Constants.TILE_SIZE / 2f) - player.position.z;
-            float dist2 = dx * dx + dz * dz;
-            if (dist2 < 16f) {
+            if (dx * dx + dz * dz < 16f) {
                 font.setColor(0.8f, 0.8f, 0f, 1f);
                 font.draw(batch, "[I] Unlock $" + d.cost, width / 2f - 60f, height / 2f + 40f);
                 font.setColor(1f, 1f, 1f, 1f);
             }
         }
 
-        // Wall buy prompt
         int wbIdx = mapManager.getNearestWallBuyIndex();
         if (wbIdx >= 0) {
-            MapManager.WallBuy wb = mapManager.wallBuys[wbIdx];
             font.setColor(0f, 1f, 0f, 1f);
-            font.draw(batch, "[I] " + wb.getLabel(), width / 2f - 60f, height / 2f + 20f);
+            font.draw(batch, "[I] " + mapManager.wallBuys[wbIdx].getLabel(),
+                    width / 2f - 60f, height / 2f + 20f);
             font.setColor(1f, 1f, 1f, 1f);
         }
     }
 
     private void drawRoundAnnouncement(float dt) {
         if (!showRound) return;
-
         roundTimer -= dt;
 
-        // Fade-in / fade-out effect
         float alpha;
-        if (roundTimer > 2.5f) {
-            alpha = (3.0f - roundTimer) / 0.5f; // fade in
-        } else if (roundTimer < 0.5f) {
-            alpha = roundTimer / 0.5f; // fade out
-        } else {
-            alpha = 1f; // full visibility
-        }
-
+        if      (roundTimer > 2.5f) alpha = (3.0f - roundTimer) / 0.5f;
+        else if (roundTimer < 0.5f) alpha = roundTimer / 0.5f;
+        else                        alpha = 1f;
         alpha = MathUtils.clamp(alpha, 0f, 1f);
 
         if (alpha > 0f) {
-            font.setColor(0.8f, 0f, 0f, alpha); // blood red
             font.getData().setScale(3f);
-            float textWidth = font.getRegion().getRegionWidth();
+            font.setColor(0.8f, 0f, 0f, alpha);
+            layout.setText(font, roundText);
             font.draw(batch, roundText,
-                    width / 2f - textWidth * 1.5f, height / 2f);
+                    (width - layout.width) / 2f, height / 2f);
             font.getData().setScale(1.2f);
 
-            // Subtitle
-            font.setColor(0.6f, 0.6f, 0.6f, alpha * 0.7f);
             font.getData().setScale(1.5f);
+            font.setColor(0.6f, 0.6f, 0.6f, alpha * 0.7f);
+            layout.setText(font, "Zombies incoming!");
             font.draw(batch, "Zombies incoming!",
-                    width / 2f - 70f, height / 2f - 40f);
+                    (width - layout.width) / 2f, height / 2f - 40f);
             font.getData().setScale(1.2f);
         }
 
-        if (roundTimer <= 0f) {
-            showRound = false;
-        }
+        if (roundTimer <= 0f) showRound = false;
     }
 
     // ── Helpers ──────────────────────────────────────────────
@@ -458,18 +434,15 @@ public class GameHUD {
             dx = (dx / dist) * maxDist;
             dy = (dy / dist) * maxDist;
         }
-
         player.moveX = dx / maxDist;
         player.moveY = dy / maxDist;
     }
 
-    private boolean inRect(float x, float y, float rx, float ry,
-                            float rw, float rh) {
+    private boolean inRect(float x, float y, float rx, float ry, float rw, float rh) {
         return x >= rx && x <= rx + rw && y >= ry && y <= ry + rh;
     }
 
     public void handleInteract() {
-        // Check wall buy first
         int wbIdx = mapManager.getNearestWallBuyIndex();
         if (wbIdx >= 0) {
             MapManager.WallBuy wb = mapManager.wallBuys[wbIdx];
@@ -478,7 +451,6 @@ public class GameHUD {
                 return;
             }
         }
-        // Fallback: doors, barriers
         mapManager.interact();
     }
 
