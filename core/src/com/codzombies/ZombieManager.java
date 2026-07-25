@@ -62,6 +62,7 @@ public class ZombieManager {
     // ── Main update ──────────────────────────────────────────
     public void update(float dt) {
         if (dt > Constants.DELTA_MAX) dt = Constants.DELTA_MAX;
+        final float dtFinal = dt; // effectively final for lambdas
 
         // Round transition countdown
         if (roundTransition) {
@@ -88,7 +89,7 @@ public class ZombieManager {
         aliveCount = 0;
         zombiePool.forEachActive((zombie, index) -> {
             if (zombie.isDead()) {
-                zombie.deathTimer -= dt;
+                zombie.deathTimer -= dtFinal;
                 if (zombie.deathTimer <= 0f) {
                     zombiePool.freeIndex(index);
                 }
@@ -96,22 +97,22 @@ public class ZombieManager {
             }
 
             // Hit flash timer
-            if (zombie.hitFlashTimer > 0f) zombie.hitFlashTimer -= dt;
+            if (zombie.hitFlashTimer > 0f) zombie.hitFlashTimer -= dtFinal;
 
             switch (zombie.state) {
                 case Zombie.STATE_SPAWNING:
-                    zombie.spawnTimer -= dt;
+                    zombie.spawnTimer -= dtFinal;
                     if (zombie.spawnTimer <= 0f) {
                         zombie.state = Zombie.STATE_PURSUING;
                     }
                     break;
 
                 case Zombie.STATE_PURSUING:
-                    updatePursuit(zombie, dt);
+                    updatePursuit(zombie, dtFinal);
                     break;
 
                 case Zombie.STATE_ATTACKING:
-                    updateAttack(zombie, dt);
+                    updateAttack(zombie, dtFinal);
                     break;
             }
 
@@ -120,14 +121,14 @@ public class ZombieManager {
 
         // Update bullets
         bulletPool.forEachActive((bullet, index) -> {
-            bullet.lifetime -= dt;
+            bullet.lifetime -= dtFinal;
             if (bullet.lifetime <= 0f) {
                 bulletPool.freeIndex(index);
                 return;
             }
-            bullet.position.x += bullet.direction.x * bullet.speed * dt;
-            bullet.position.y += bullet.direction.y * bullet.speed * dt;
-            bullet.position.z += bullet.direction.z * bullet.speed * dt;
+            bullet.position.x += bullet.direction.x * bullet.speed * dtFinal;
+            bullet.position.y += bullet.direction.y * bullet.speed * dtFinal;
+            bullet.position.z += bullet.direction.z * bullet.speed * dtFinal;
 
             // Splash damage check
             if (bullet.splashRadius > 0f) {

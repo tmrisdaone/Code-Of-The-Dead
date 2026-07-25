@@ -21,11 +21,10 @@ public class WeaponSystem {
     // ── Timers / state ───────────────────────────────────────
     private float fireTimer      = 0f;
     private float reloadTimer    = 0f;
-    private boolean isReloading  = false;
+    public  boolean isReloading  = false; // public for HUD read
     private float swapTimer      = 0f;
     private boolean isSwapping   = false;
     public  boolean weaponReady  = true;
-    public  boolean isReloading  = false; // public for HUD read
 
     // ── ADS ──────────────────────────────────────────────────
     public float adsLerp    = 0f;    // 0=hip, 1=ads

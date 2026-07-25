@@ -6,6 +6,7 @@ import com.badlogic.gdx.Input;
 import com.badlogic.gdx.InputProcessor;
 import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.VertexAttributes;
 import com.badlogic.gdx.graphics.g3d.Environment;
 import com.badlogic.gdx.graphics.g3d.Material;
 import com.badlogic.gdx.graphics.g3d.Model;
@@ -86,13 +87,13 @@ public class CodZombiesGame extends ApplicationAdapter implements InputProcessor
 
         // ── Floor model ─────────────────────────────────────
         ModelBuilder mb = new ModelBuilder();
-        float mapWorld = Constants.MAP_SIZE * Constants.TILE_SIZE;
+        float mapWorld = MapManager.MAP_SIZE * Constants.TILE_SIZE;
         floorModel = mb.createBox(
                 mapWorld, 0.1f, mapWorld,
                 new Material(ColorAttribute.createDiffuse(
                         new Color(0.25f, 0.25f, 0.25f, 1f))),
-                com.badlogic.gdx.graphics.g3d.utils.VertexAttributes.Usage.Position
-                        | com.badlogic.gdx.graphics.g3d.utils.VertexAttributes.Usage.Normal
+                VertexAttributes.Usage.Position
+                        | VertexAttributes.Usage.Normal
         );
         floorInstance = new ModelInstance(floorModel);
         floorInstance.transform.setToTranslation(
@@ -123,8 +124,8 @@ public class CodZombiesGame extends ApplicationAdapter implements InputProcessor
                 Model box = mb.createBox(
                         Constants.TILE_SIZE, Constants.TILE_SIZE, Constants.TILE_SIZE,
                         new Material(ColorAttribute.createDiffuse(c)),
-                        com.badlogic.gdx.graphics.g3d.utils.VertexAttributes.Usage.Position
-                                | com.badlogic.gdx.graphics.g3d.utils.VertexAttributes.Usage.Normal
+                        VertexAttributes.Usage.Position
+                                | VertexAttributes.Usage.Normal
                 );
                 wallInstances[wi] = new ModelInstance(box);
                 wallInstances[wi].transform.setToTranslation(
@@ -140,8 +141,8 @@ public class CodZombiesGame extends ApplicationAdapter implements InputProcessor
         zombieModel = mb.createBox(
                 0.6f, 1.6f, 0.6f,
                 new Material(ColorAttribute.createDiffuse(COLOR_ZOMBIE)),
-                com.badlogic.gdx.graphics.g3d.utils.VertexAttributes.Usage.Position
-                        | com.badlogic.gdx.graphics.g3d.utils.VertexAttributes.Usage.Normal
+                VertexAttributes.Usage.Position
+                        | VertexAttributes.Usage.Normal
         );
         zombieVisual = new ModelInstance(zombieModel);
 
@@ -251,6 +252,7 @@ public class CodZombiesGame extends ApplicationAdapter implements InputProcessor
 
     @Override public boolean keyUp(int keycode) { return false; }
     @Override public boolean keyTyped(char c)   { return false; }
+    @Override public boolean touchCancelled(int sx, int sy, int ptr, int btn) { return false; }
 
     // ═════════════════════════════════════════════════════════
     //  DESKTOP INPUT
