@@ -1,0 +1,48 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Android
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.log
+
+# Native
+*.so
+*.dll
+*.dylib
+
+# Desktop
+desktop/build/
+
+# Core
+core/build/
+
+# Android
+android/build/
+android/bin/
+android/gen/
+android/.gradle/
