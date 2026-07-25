@@ -57,7 +57,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build desktop jar
-        run: ./gradlew :desktop:jar --no-daemon
+        run: ./gradlew :desktop:compileJava --no-daemon
 
       - name: Upload desktop jar
         uses: actions/upload-artifact@v4
