@@ -43,22 +43,22 @@ project(":android") {
         natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-x86_64"
     }
 
-    // Extract native .so files from the natives configuration into the APK.
-    // Without this, LibGDX crashes with UnsatisfiedLinkError at startup.
+    // Extract native .so files into src/main/jniLibs/ so the Android
+    // build plugin packages them in the APK. Without this LibGDX
+    // crashes with UnsatisfiedLinkError at startup.
     task copyAndroidNatives {
         doLast {
-            file("libs/armeabi-v7a/").mkdirs()
-            file("libs/arm64-v8a/").mkdirs()
-            file("libs/x86_64/").mkdirs()
-            file("libs/x86/").mkdirs()
+            def jniRoot = file("src/main/jniLibs")
+            jniRoot.mkdirs()
 
             configurations.natives.copy().files.each { jar ->
                 def outputDir = null
-                if      (jar.name.endsWith("natives-armeabi-v7a.jar")) outputDir = file("libs/armeabi-v7a")
-                else if (jar.name.endsWith("natives-arm64-v8a.jar")) outputDir = file("libs/arm64-v8a")
-                else if (jar.name.endsWith("natives-x86_64.jar"))    outputDir = file("libs/x86_64")
-                else if (jar.name.endsWith("natives-x86.jar"))       outputDir = file("libs/x86")
+                if      (jar.name.endsWith("natives-armeabi-v7a.jar")) outputDir = file("src/main/jniLibs/armeabi-v7a")
+                else if (jar.name.endsWith("natives-arm64-v8a.jar")) outputDir = file("src/main/jniLibs/arm64-v8a")
+                else if (jar.name.endsWith("natives-x86_64.jar"))    outputDir = file("src/main/jniLibs/x86_64")
+                else if (jar.name.endsWith("natives-x86.jar"))       outputDir = file("src/main/jniLibs/x86")
                 if (outputDir != null) {
+                    outputDir.mkdirs()
                     copy {
                         from zipTree(jar)
                         into outputDir
@@ -69,9 +69,9 @@ project(":android") {
         }
     }
 
-    // Wire the native copy into the build pipeline
+    // Ensure native libs are extracted before the APK is assembled
     tasks.whenTaskAdded { task ->
-        if (task.name.startsWith("merge") && task.name.endsWith("NativeLibs")) {
+        if (task.name.contains("mergeDebugNativeLibs") || task.name.contains("mergeReleaseNativeLibs")) {
             task.dependsOn copyAndroidNatives
         }
     }

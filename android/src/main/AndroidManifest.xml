@@ -10,9 +10,7 @@
     <application
         android:allowBackup="false"
         android:label="Code Of The Dead"
-        android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
-        android:screenOrientation="landscape"
-        android:configChanges="orientation|screenSize|keyboardHidden">
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
         <activity
             android:name=".AndroidLauncher"
