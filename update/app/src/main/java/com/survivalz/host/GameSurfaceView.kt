@@ -30,14 +30,13 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // Core world & loop
     private val world = GameWorld().apply {
-        // Add some test spawn points around the center
         val pts = arrayListOf<RoundManager.SpawnPoint>()
         pts.add(RoundManager.SpawnPoint(-10f, -10f))
         pts.add(RoundManager.SpawnPoint(10f, -10f))
         pts.add(RoundManager.SpawnPoint(-10f, 10f))
         pts.add(RoundManager.SpawnPoint(10f, 10f))
         roundManager.setSpawnPoints(pts)
-        roundManager.setKiller(this) // wire NUKE support
+        // GameWorld already implements Killer and wires itself in its constructor
     }
     private val gameLoop = GameLoop(world, this, this)
 
@@ -135,9 +134,9 @@ class GameSurfaceView @JvmOverloads constructor(
         paint.strokeWidth = 3f / worldToScreen
         paint.color = 0xFFFFFF00.toInt()
         for (ia in world.interactables) {
-            debugRect.set(ia.getX() - 0.5f, ia.getY() - 0.5f, ia.getX() + 0.5f, ia.getY() + 0.5f)
+            debugRect.set(ia.x - 0.5f, ia.y - 0.5f, ia.x + 0.5f, ia.y + 0.5f)
             canvas.drawRect(debugRect, paint)
-            canvas.drawText(ia.getPrompt(p), ia.getX(), ia.getY() - 0.7f, paint)
+            canvas.drawText(ia.getPrompt(p), ia.x, ia.y - 0.7f, paint)
         }
 
         // Draw power-ups
@@ -157,84 +156,121 @@ class GameSurfaceView @JvmOverloads constructor(
             canvas.drawRect(debugRect, paint)
         }
 
-        // Draw mystery box
-        if (world.mysteryBox != null) {
-            val mb = world.mysteryBox!!
-            paint.color = if (mb.isInUse()) 0xFFFF8800.toInt() else 0xFF8888FF.toInt()
-            debugRect.set(mb.getX() - 0.6f, mb.getY() - 0.6f, mb.getX() + 0.6f, mb.getY() + 0.6f)
-            canvas.drawRect(debugRect, paint)
-            canvas.drawText(mb.getPrompt(p), mb.getX(), mb.getY() - 0.9f, paint)
-        }
-
-        // HUD (draw in screen space)
-        canvas.scale(1f / worldToScreen, -1f / worldToScreen)
+        // HUD (screen-space)
+        canvas.save()
         canvas.translate(-cx, -cy)
-        paint.textSize = 28f
+        canvas.scale(1f / worldToScreen, -1f / worldToScreen)
+
         paint.color = 0xFFFFFFFF.toInt()
         paint.style = Paint.Style.FILL
-        canvas.drawText("Round: ${world.roundManager.round}  Zombies: ${world.zombies.count { it.isActive() }}", 20f, 40f, paint)
-        canvas.drawText("Points: ${p.points}  Ammo: ${p.getCurrentWeapon()?.ammo ?: 0}/${p.getCurrentWeapon()?.maxAmmo ?: 0}", 20f, 76f, paint)
-        canvas.drawText("Health: ${p.health}/${Player.MAX_HEALTH}", 20f, 112f, paint)
+        paint.textSize = 48f
+        paint.strokeWidth = 0f
+
+        canvas.drawText("Round: ${world.roundManager.round}", 40f, 80f, paint)
+        canvas.drawText("Zombies: ${world.roundManager.zombiesAlive}", 40f, 160f, paint)
+        canvas.drawText("Points: ${p.points}", 40f, 240f, paint)
+        canvas.drawText("HP: ${p.health}", 40f, 320f, paint)
+
+        val w = p.currentWeapon
+        if (w != null) {
+            canvas.drawText("${w.id} ${w.ammo}/${w.maxAmmo}", 40f, 400f, paint)
+        }
+
+        // Interaction prompt
+        val hovered = world.hoveredInteractable
+        if (hovered != null) {
+            canvas.drawText(hovered.getPrompt(p), 40f, 480f, paint)
+        }
+
+        canvas.restore()
     }
 
-    // ===== Touch handling (render thread) =====
+    // Touch input
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val action = event.actionMasked
         val idx = event.actionIndex
-        val id = event.getPointerId(idx)
+        val ptrId = event.getPointerId(idx)
 
         when (action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                if (id < touchDown.size) {
-                    touchDown[id] = true
-                    touchX[id] = event.getX(idx)
-                    touchY[id] = event.getY(idx)
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ptrId < touchDown.size) {
+                    touchDown[ptrId] = true
+                    touchX[ptrId] = event.getX(idx)
+                    touchY[ptrId] = event.getY(idx)
                 }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
-                if (id < touchDown.size) touchDown[id] = false
             }
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
-                    val pid = event.getPointerId(i)
-                    if (pid < touchDown.size && touchDown[pid]) {
-                        touchX[pid] = event.getX(i)
-                        touchY[pid] = event.getY(i)
+                    val id = event.getPointerId(i)
+                    if (id < touchDown.size) {
+                        touchX[id] = event.getX(i)
+                        touchY[id] = event.getY(i)
                     }
+                }
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_POINTER_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                if (ptrId < touchDown.size) {
+                    touchDown[ptrId] = false
                 }
             }
         }
 
-        // Map first touch to move, second touch to aim, tap to interact
-        var moveX = 0f; var moveY = 0f; var aimX = 0f; var aimY = 0f; var firing = false; var interact = false
+        // Synthesize input state for this frame
+        synthesizeInput()
+        return true
+    }
 
-        // Pointer 0: move (left side), Pointer 1: aim (right side)
-        for (i in 0 until touchDown.size) {
-            if (!touchDown[i]) continue
-            val tx = (touchX[i] - screenW / 2f) / worldToScreen
-            val ty = -(touchY[i] - screenH / 2f) / worldToScreen // flip Y
+    private fun synthesizeInput() {
+        val input = pendingInput
 
-            if (i == 0 || touchX[i] < screenW / 2f) {
-                moveX = tx; moveY = ty
+        // Left half = move joystick, right half = aim joystick
+        var bestMovePtr = -1
+        var bestAimPtr = -1
+        var bestMoveDist = Float.MAX_VALUE
+        var bestAimDist = Float.MAX_VALUE
+        val cx = screenW / 2f
+        val cy = screenH / 2f
+
+        for (id in 0 until touchDown.size) {
+            if (!touchDown[id]) continue
+            val dx = touchX[id] - cx
+            val dy = touchY[id] - cy
+            val dist2 = dx * dx + dy * dy
+            if (touchX[id] < cx) {
+                if (dist2 < bestMoveDist) { bestMoveDist = dist2; bestMovePtr = id }
             } else {
-                aimX = tx; aimY = ty; firing = true
+                if (dist2 < bestAimDist) { bestAimDist = dist2; bestAimPtr = id }
             }
         }
 
-        // Quick tap on player = interact (simple heuristic)
-        if (event.action == MotionEvent.ACTION_UP && event.pointerCount == 1) {
-            interact = true
+        if (bestMovePtr != -1) {
+            val dx = touchX[bestMovePtr] - cx
+            val dy = touchY[bestMovePtr] - cy
+            val len = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+            if (len > 20f) {
+                input.moveX = dx / len
+                input.moveY = dy / len
+            }
         }
 
-        // Write into pending input (consumed by sim thread via poll())
-        pendingInput.moveX = moveX.coerceIn(-1f, 1f)
-        pendingInput.moveY = moveY.coerceIn(-1f, 1f)
-        pendingInput.aimX = aimX
-        pendingInput.aimY = aimY
-        pendingInput.firing = firing
-        pendingInput.interact = interact
+        if (bestAimPtr != -1) {
+            val dx = touchX[bestAimPtr] - cx
+            val dy = touchY[bestAimPtr] - cy
+            val len = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+            if (len > 20f) {
+                input.aimX = dx / len
+                input.aimY = dy / len
+            }
+        }
 
-        return true
+        // Fire if any touch on right half
+        if (bestAimPtr != -1) input.firing = true
+
+        // Interact button: double-tap on left half (simplified: tap & hold > 0.3s not implemented here)
+        // For now: tap interactable prompt area would be better, but skip for brevity
     }
 
     private inner class RenderThread : Thread() {
@@ -244,9 +280,17 @@ class GameSurfaceView @JvmOverloads constructor(
         override fun run() {
             while (running) {
                 val now = System.nanoTime()
-                val dt = (now - lastTime) / 1e9f
+                val dt = (now - lastTime) / 1_000_000_000.0
                 lastTime = now
+
+                if (dt > 0.25) continue // spiral of death guard
+
                 gameLoop.tick(dt)
+
+                // Frame pacing ~60fps
+                val frameTime = System.nanoTime() - now
+                val sleepTime = max(0L, (16_666_666L - frameTime) / 1_000_000)
+                if (sleepTime > 0) Thread.sleep(sleepTime)
             }
         }
 

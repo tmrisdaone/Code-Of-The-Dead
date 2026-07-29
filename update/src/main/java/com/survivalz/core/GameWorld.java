@@ -145,7 +145,8 @@ public class GameWorld implements RoundManager.Spawner, RoundManager.Killer {
 
     public Player getPlayer() { return player; }
     public ArrayList<Zombie> getZombies() { return zombies; }
-    public ArrayList<PowerUp> getPowerups() { return powerups; }
+    public ArrayList<PowerUp> getPowerUps() { return powerups; }
+    public ArrayList<Interactable> getInteractables() { return interactables; }
     public Interactable getHoveredInteractable() { return hoveredInteractable; }
     public RoundManager getRoundManager() { return roundManager; }
 
@@ -155,5 +156,11 @@ public class GameWorld implements RoundManager.Spawner, RoundManager.Killer {
         public float aimX, aimY;
         public boolean firing;
         public boolean interactPressed;
+
+        public void reset() {
+            moveX = moveY = aimX = aimY = 0f;
+            firing = false;
+            interactPressed = false;
+        }
     }
 }
