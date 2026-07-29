@@ -1,0 +1,25 @@
+public class Weapon {
+    private final String id;
+    private final float fireInterval; // seconds between shots
+    private int ammo;
+    private final int maxAmmo;
+
+    public Weapon(String id, float fireInterval, int startAmmo, int maxAmmo) {
+        this.id = id;
+        this.fireInterval = fireInterval;
+        this.ammo = startAmmo;
+        this.maxAmmo = maxAmmo;
+    }
+
+    public boolean consumeAmmo(int amount) {
+        if (ammo >= amount) {
+            ammo -= amount;
+            return true;
+        }
+        return false;
+    }
+
+    public void refill() { ammo = maxAmmo; }
+    public int getAmmo() { return ammo; }
+    public float getFireInterval() { return fireInterval; }
+}

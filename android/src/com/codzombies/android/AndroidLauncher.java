@@ -5,17 +5,15 @@ import android.view.View;
 
 import com.badlogic.gdx.backends.android.AndroidApplication;
 import com.badlogic.gdx.backends.android.AndroidApplicationConfiguration;
-import com.codzombies.CodZombiesGame;
-import com.codzombies.GameHUD;
+import com.survivalz.core.SurvivalzGame;
 
 /**
  * Android Activity that hosts the LibGDX game.
- * Forwards touch events from the GLSurfaceView to the GameHUD input system.
+ * Uses the new com.survivalz.core architecture.
  */
 public class AndroidLauncher extends AndroidApplication {
 
-    private CodZombiesGame game;
-    private GameHUD hud;
+    private SurvivalzGame game;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -28,7 +26,7 @@ public class AndroidLauncher extends AndroidApplication {
         config.numSamples = 2; // MSAA for smoother edges
 
         // Create the game
-        game = new CodZombiesGame();
+        game = new SurvivalzGame();
         initialize(game, config);
 
         // Set up immersive mode (hide nav bar, status bar)

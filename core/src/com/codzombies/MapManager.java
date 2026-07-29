@@ -16,7 +16,9 @@ public class MapManager {
     public static final int TILE_WALLBUY  = 4;
 
     // ── The map grid (12 x 12) ──────────────────────────────
-    private static final int[][] MAP_DATA = {
+    // Read-only template; per-instance copy is held in `mapData` so door-open
+    // mutations don't leak across game restarts.
+    private static final int[][] MAP_TEMPLATE = {
             {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
             {1, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 1},
             {1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1},
@@ -32,6 +34,9 @@ public class MapManager {
     };
 
     public static final int MAP_SIZE = 12;
+
+    /** Per-instance mutable copy of the map (door-open, barrier rebuild, etc.). */
+    private int[][] mapData;
 
     // ── Barrier state ───────────────────────────────────────
     public static class Barrier {
@@ -97,11 +102,12 @@ public class MapManager {
 
     public MapManager(PlayerController player) {
         this.player = player;
+        copyMapFromTemplate();
 
         // Count interactables in map to size arrays
         for (int y = 0; y < MAP_SIZE; y++) {
             for (int x = 0; x < MAP_SIZE; x++) {
-                switch (MAP_DATA[y][x]) {
+                switch (mapData[y][x]) {
                     case TILE_BARRIER: barrierCount++; break;
                     case TILE_DOOR:    doorCount++;    break;
                     case TILE_WALLBUY: wallBuyCount++; break;
@@ -123,7 +129,7 @@ public class MapManager {
 
         for (int y = 0; y < MAP_SIZE; y++) {
             for (int x = 0; x < MAP_SIZE; x++) {
-                switch (MAP_DATA[y][x]) {
+                switch (mapData[y][x]) {
                     case TILE_BARRIER:
                         barriers[bi++] = new Barrier(x, y);
                         break;
@@ -137,6 +143,29 @@ public class MapManager {
                         break;
                 }
             }
+        }
+    }
+
+    /** Reset map state for a new game — restore tiles and interactables. */
+    public void reset() {
+        copyMapFromTemplate();
+        for (int i = 0; i < barrierCount; i++) {
+            barriers[i].boardsRemaining = Constants.MAX_BARRIER_BOARDS;
+            barriers[i].breached = false;
+        }
+        for (int i = 0; i < doorCount; i++) {
+            doors[i].isOpen = false;
+        }
+        for (int i = 0; i < wallBuyCount; i++) {
+            wallBuys[i].purchased = false;
+        }
+    }
+
+    /** Deep-copy MAP_TEMPLATE into the instance mapData array. */
+    private void copyMapFromTemplate() {
+        mapData = new int[MAP_SIZE][MAP_SIZE];
+        for (int y = 0; y < MAP_SIZE; y++) {
+            System.arraycopy(MAP_TEMPLATE[y], 0, mapData[y], 0, MAP_SIZE);
         }
     }
 
@@ -235,23 +264,22 @@ public class MapManager {
         int tx = (int)(x / Constants.TILE_SIZE);
         int tz = (int)(z / Constants.TILE_SIZE);
         if (tx < 0 || tx >= MAP_SIZE || tz < 0 || tz >= MAP_SIZE) return true;
-        int tile = MAP_DATA[tz][tx];
+        int tile = mapData[tz][tx];
         return tile == TILE_WALL || tile == TILE_DOOR || tile == TILE_BARRIER;
     }
 
     /** Returns the tile type at grid position. */
     public int getTile(int tx, int ty) {
         if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) return TILE_WALL;
-        return MAP_DATA[ty][tx];
+        return mapData[ty][tx];
     }
 
     /** Update a tile in the map data (e.g. after opening a door). */
     private void updateMapTile(int tx, int ty, int newType) {
         if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) return;
-        // Since MAP_DATA is a static const, we update the dynamic copy
-        // This modifies the static array — fine for a single-player game
-        MAP_DATA[ty][tx] = newType;
+        // Update the per-instance copy — never the shared template.
+        mapData[ty][tx] = newType;
     }
 
-    public int[][] getMapData() { return MAP_DATA; }
+    public int[][] getMapData() { return mapData; }
 }
