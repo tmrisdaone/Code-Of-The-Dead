@@ -5,16 +5,19 @@ import com.survivalz.core.entity.PowerUp;
 import com.survivalz.core.entity.Zombie;
 import com.survivalz.core.entity.ZombieStates;
 import com.survivalz.core.interact.Interactable;
+import com.survivalz.core.interact.Door;
+import com.survivalz.core.interact.MysteryBox;
 import com.survivalz.core.pool.ObjectPool;
 import com.survivalz.core.round.RoundManager;
 import com.survivalz.core.config.BalanceConfig;
 import com.survivalz.core.weapon.WeaponSystem;
+import com.survivalz.core.weapon.WeaponDef;
 
 import java.util.ArrayList;
 
 /**
  * Central game model — holds all entities and subsystems.
- * Single entry point called by GameLoop at 60 Hz.
+ * Single entry point called by the renderer each frame.
  */
 public class GameWorld {
 
@@ -25,6 +28,7 @@ public class GameWorld {
 
     private final ArrayList<Zombie> zombies = new ArrayList<>(32);
     private final ArrayList<Interactable> interactables = new ArrayList<>();
+    private final ArrayList<MysteryBox> mysteryBoxes = new ArrayList<>();
     private final ArrayList<PowerUp> powerups = new ArrayList<>();
 
     private Interactable hoveredInteractable = null;
@@ -43,6 +47,30 @@ public class GameWorld {
             { -15f, 0f },   { 15f, 0f },   { 0f, -15f },  { 0f, 15f }
     };
 
+    // ── Map data (owned here, read by renderer) ────────────
+    private static final int TILE_EMPTY   = 0;
+    private static final int TILE_WALL    = 1;
+    private static final int TILE_DOOR    = 2;
+    private static final int TILE_BARRIER = 3;
+    private static final int TILE_WALLBUY = 4;
+
+    private static final int[][] MAP_TEMPLATE = {
+            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+            {1, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 1},
+            {1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1},
+            {1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1},
+            {1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1},
+            {1, 3, 0, 0, 2, 0, 0, 2, 0, 0, 3, 1},
+            {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+            {1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1},
+            {1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1},
+            {1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1},
+            {1, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 1},
+            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+    };
+
+    private final int[][] mapData = new int[BalanceConfig.MAP_SIZE][BalanceConfig.MAP_SIZE];
+
     public GameWorld() {
         zombiePool = new ObjectPool<Zombie>(8, BalanceConfig.ZOMBIE_MAX_POOL) {
             @Override protected Zombie newObject() { return new Zombie(); }
@@ -51,7 +79,6 @@ public class GameWorld {
         roundManager.addListener(new RoundManager.RoundListener() {
             @Override
             public void onRoundStarted(int round) {
-                // UI layer listens via EventBus
                 EventBus.INSTANCE.post(GameEvent.of(GameEvent.Type.ROUND_STARTED, round));
             }
 
@@ -60,6 +87,11 @@ public class GameWorld {
                 EventBus.INSTANCE.post(GameEvent.of(GameEvent.Type.ROUND_ENDED, round));
             }
         });
+
+        // Copy map template into instance data (so door-open mutations don't leak)
+        for (int y = 0; y < BalanceConfig.MAP_SIZE; y++) {
+            System.arraycopy(MAP_TEMPLATE[y], 0, mapData[y], 0, BalanceConfig.MAP_SIZE);
+        }
 
         // Register spawn points from the map edge nodes
         for (float[] node : SPAWN_NODES) {
@@ -70,7 +102,7 @@ public class GameWorld {
         roundManager.signalNextRound();
     }
 
-    /** Called every frame by the game loop. */
+    /** Called every frame by the renderer. */
     public void update(float deltaTime) {
         if (gameOver) return;
 
@@ -96,9 +128,9 @@ public class GameWorld {
             z.update(deltaTime, player);
 
             if (z.isDead()) {
-                // Award kill points (hit points already awarded in performWeaponHit)
-                int pts = player.hasBuff(Player.Buff.DOUBLE_POINTS) ? 200 : 100;
-                player.addPoints(pts);
+                // Award kill points (hit points already awarded in performWeaponHit).
+                // addPoints() already handles DOUBLE_POINTS doubling — don't pre-multiply here.
+                player.addPoints(BalanceConfig.POINTS_PER_KILL);
                 player.incrementKills(false);
                 roundManager.onZombieKilled();
 
@@ -117,7 +149,7 @@ public class GameWorld {
             }
         }
 
-        // 6. Scan for nearest interactable
+        // 6. Scan for nearest interactable and handle interaction
         hoveredInteractable = null;
         float best = BalanceConfig.INTERACT_RADIUS * BalanceConfig.INTERACT_RADIUS;
         for (int i = 0, n = interactables.size(); i < n; i++) {
@@ -131,10 +163,26 @@ public class GameWorld {
             }
         }
         if (interactPressed && hoveredInteractable != null) {
+            // Check if it's a Door that just got unlocked — update the map tile
+            boolean wasLocked = false;
+            if (hoveredInteractable instanceof Door) {
+                wasLocked = !((Door) hoveredInteractable).isUnlocked();
+            }
             hoveredInteractable.onInteract(player);
+            if (hoveredInteractable instanceof Door) {
+                Door door = (Door) hoveredInteractable;
+                if (wasLocked && door.isUnlocked()) {
+                    doorOpened(door.getTileX(), door.getTileY());
+                }
+            }
         }
 
-        // 7. Powerups
+        // 7. Mystery Box timers
+        for (int i = 0, n = mysteryBoxes.size(); i < n; i++) {
+            mysteryBoxes.get(i).update(deltaTime);
+        }
+
+        // 8. Powerups
         for (int i = powerups.size() - 1; i >= 0; i--) {
             PowerUp pu = powerups.get(i);
             pu.update(deltaTime);
@@ -149,7 +197,7 @@ public class GameWorld {
             }
         }
 
-        // 8. Check game over
+        // 9. Check game over
         if (!player.isAlive()) {
             gameOver = true;
             EventBus.INSTANCE.post(GameEvent.of(GameEvent.Type.GAME_OVER));
@@ -205,7 +253,6 @@ public class GameWorld {
 
         if (target == null) return;
 
-        // Insta-kill only affects the targeted zombie
         boolean wasKill = false;
         if (player.hasBuff(Player.Buff.INSTAKILL)) {
             target.takeDamage(target.getHealth()); // kills instantly
@@ -220,8 +267,7 @@ public class GameWorld {
         }
 
         if (wasKill) {
-            // Points are awarded in the zombie death detection loop below.
-            // Mark killed by hit so the death loop doesn't double-award.
+            // Points are awarded in the zombie death detection loop above.
         }
     }
 
@@ -233,9 +279,49 @@ public class GameWorld {
     public void setReloadPressed() { this.reloadPressed = true; }
     public void setWeaponSwitch() { weaponSystem.switchWeapon(); }
 
+    /** Called when a door is opened — updates map data so renderer sees the change. */
+    public void doorOpened(int tileX, int tileY) {
+        if (tileX < 0 || tileX >= BalanceConfig.MAP_SIZE ||
+            tileY < 0 || tileY >= BalanceConfig.MAP_SIZE) return;
+        mapData[tileY][tileX] = TILE_EMPTY;
+        EventBus.INSTANCE.post(GameEvent.of(GameEvent.Type.DOOR_OPENED,
+                new int[]{tileX, tileY}));
+    }
+
+    /** Returns true if the tile at grid position is a wall/blocking tile. */
+    public boolean isSolidTile(int tx, int ty) {
+        if (tx < 0 || tx >= BalanceConfig.MAP_SIZE ||
+            ty < 0 || ty >= BalanceConfig.MAP_SIZE) return true;
+        int t = mapData[ty][tx];
+        return t == TILE_WALL || t == TILE_DOOR || t == TILE_BARRIER;
+    }
+
+    /** Returns the tile type at a grid position. */
+    public int getTile(int tx, int ty) {
+        if (tx < 0 || tx >= BalanceConfig.MAP_SIZE ||
+            ty < 0 || ty >= BalanceConfig.MAP_SIZE) return TILE_WALL;
+        return mapData[ty][tx];
+    }
+
+    public int[][] getMapData() { return mapData; }
+
     // ── Registration ─────────────────────────────────────────
 
-    public void addInteractable(Interactable in) { interactables.add(in); }
+    public void addInteractable(Interactable in) {
+        interactables.add(in);
+        if (in instanceof MysteryBox) {
+            MysteryBox mb = (MysteryBox) in;
+            mysteryBoxes.add(mb);
+            // Wire the MysteryBox to give the player a weapon when roulette ends
+            mb.setOnWeaponSelected(weaponId -> {
+                WeaponDef def = WeaponDef.forName(weaponId);
+                if (def != null) {
+                    weaponSystem.buyWallWeapon(def);
+                }
+            });
+        }
+    }
+
     public void addPowerUp(float x, float y, PowerUp.Type type) {
         powerups.add(new PowerUp(x, y, type));
     }
@@ -249,8 +335,13 @@ public class GameWorld {
         zombies.clear();
         powerups.clear();
         interactables.clear();
+        mysteryBoxes.clear();
         hoveredInteractable = null;
         gameOver = false;
+        // Restore map from template
+        for (int y = 0; y < BalanceConfig.MAP_SIZE; y++) {
+            System.arraycopy(MAP_TEMPLATE[y], 0, mapData[y], 0, BalanceConfig.MAP_SIZE);
+        }
         roundManager.signalNextRound();
         EventBus.INSTANCE.post(GameEvent.of(GameEvent.Type.GAME_RESET));
     }

@@ -22,7 +22,6 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.PerspectiveCamera;
 import com.badlogic.gdx.math.MathUtils;
-import com.badlogic.gdx.math.Vector3;
 import com.badlogic.gdx.utils.ScreenUtils;
 
 import com.survivalz.core.config.BalanceConfig;
@@ -36,9 +35,6 @@ import com.survivalz.core.weapon.WeaponSystem;
 /**
  * Main game class — bridges the new com.survivalz.core architecture
  * with LibGDX 3D rendering. Uses GameWorld for all game logic.
- *
- * Features proper FPS camera with yaw/pitch and ADS interpolation.
- * Targets 60 FPS with delta-time frame independence.
  */
 public class SurvivalzGame extends ApplicationAdapter implements InputProcessor {
 
@@ -51,11 +47,11 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
     private Environment     environment;
     private ShapeRenderer   shapes;
     private PerspectiveCamera camera;
-    private ModelInstance[] wallInstances;
+    private ModelInstance[][] wallModels; // [tileZ][tileX] — null = removed/door opened
     private ModelInstance   floorInstance;
-    private ModelInstance   zombieVisual;
-    private Model           zombieModel;
     private Model           floorModel;
+    private Model           zombieModel;
+    private ModelInstance   zombieVisual;
 
     // ── 2D HUD ───────────────────────────────────────────────
     private OrthographicCamera hudCam;
@@ -79,27 +75,11 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
     private static final Color COLOR_ZOMBIE  = new Color(0.60f, 0.00f, 0.00f, 1f);
     private static final Color COLOR_HIT     = new Color(1.00f, 1.00f, 1.00f, 1f);
 
-    // ── Map data ─────────────────────────────────────────────
     private static final int TILE_EMPTY   = 0;
     private static final int TILE_WALL    = 1;
     private static final int TILE_DOOR    = 2;
     private static final int TILE_BARRIER = 3;
     private static final int TILE_WALLBUY = 4;
-
-    private static final int[][] MAP_DATA = {
-            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-            {1, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 1},
-            {1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1},
-            {1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1},
-            {1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1},
-            {1, 3, 0, 0, 2, 0, 0, 2, 0, 0, 3, 1},
-            {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-            {1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1},
-            {1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1},
-            {1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1},
-            {1, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 1},
-            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-    };
 
     // ── Player movement ──────────────────────────────────────
     private float moveX = 0f, moveY = 0f;
@@ -147,42 +127,8 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
         floorInstance.transform.setToTranslation(
                 mapWorld / 2f, -0.1f, mapWorld / 2f);
 
-        // ── Pre-build wall models ───────────────────────────
-        int wallCount = 0;
-        for (int y = 0; y < BalanceConfig.MAP_SIZE; y++)
-            for (int x = 0; x < BalanceConfig.MAP_SIZE; x++)
-                if (MAP_DATA[y][x] != TILE_EMPTY) wallCount++;
-
-        wallInstances = new ModelInstance[wallCount];
-        int wi = 0;
-        for (int y = 0; y < BalanceConfig.MAP_SIZE; y++) {
-            for (int x = 0; x < BalanceConfig.MAP_SIZE; x++) {
-                int tile = MAP_DATA[y][x];
-                if (tile == TILE_EMPTY) continue;
-
-                Color c;
-                switch (tile) {
-                    case TILE_WALL:    c = COLOR_WALL;    break;
-                    case TILE_BARRIER: c = COLOR_BARRIER; break;
-                    case TILE_DOOR:    c = COLOR_DOOR;    break;
-                    case TILE_WALLBUY: c = COLOR_WALLBUY; break;
-                    default:           c = COLOR_WALL;
-                }
-                Model box = mb.createBox(
-                        BalanceConfig.TILE_SIZE, BalanceConfig.TILE_SIZE, BalanceConfig.TILE_SIZE,
-                        new Material(ColorAttribute.createDiffuse(c)),
-                        VertexAttributes.Usage.Position
-                                | VertexAttributes.Usage.Normal
-                );
-                wallInstances[wi] = new ModelInstance(box);
-                wallInstances[wi].transform.setToTranslation(
-                        x * BalanceConfig.TILE_SIZE + BalanceConfig.TILE_SIZE / 2f,
-                        BalanceConfig.TILE_SIZE / 2f,
-                        y * BalanceConfig.TILE_SIZE + BalanceConfig.TILE_SIZE / 2f
-                );
-                wi++;
-            }
-        }
+        // ── Build wall models from GameWorld map data ────
+        rebuildWalls();
 
         // ── Zombie model ────────────────────────────────────
         zombieModel = mb.createBox(
@@ -204,6 +150,14 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
         // ── Input ───────────────────────────────────────────
         Gdx.input.setInputProcessor(this);
         Gdx.input.setCatchKey(Input.Keys.ESCAPE, true);
+
+        // ── Subscribe to door-opened events for dynamic wall removal ──
+        EventBus.INSTANCE.subscribe(GameEvent.Type.DOOR_OPENED, event -> {
+            int[] coords = event.getData();
+            int tx = coords[0];
+            int ty = coords[1];
+            removeWallVisual(tx, ty);
+        });
     }
 
     @Override
@@ -215,7 +169,6 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
 
         // ── Update game world ────────────────────────────────
         if (!gameOver) {
-            // Pass movement to the game world
             world.setMoveInput(moveX, moveY);
             world.setFiring(firePressed);
 
@@ -224,12 +177,10 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
 
             if (world.isGameOver()) gameOver = true;
 
-            // Damage flash when health is low
             if (world.getPlayer().getHealth() < BalanceConfig.PLAYER_HEALTH_MAX * 0.3f) {
                 gameHud.triggerDamageFlash();
             }
 
-            // Update the 3D camera
             updateCamera(dt);
         }
 
@@ -239,8 +190,16 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
         modelBatch.begin(camera);
         modelBatch.render(floorInstance, environment);
 
-        for (ModelInstance inst : wallInstances)
-            modelBatch.render(inst, environment);
+        // Render only visible (non-opened-door) wall tiles
+        int[][] mapData = world.getMapData();
+        for (int z = 0; z < BalanceConfig.MAP_SIZE; z++) {
+            for (int x = 0; x < BalanceConfig.MAP_SIZE; x++) {
+                ModelInstance inst = wallModels[z][x];
+                if (inst != null && mapData[z][x] != TILE_EMPTY) {
+                    modelBatch.render(inst, environment);
+                }
+            }
+        }
 
         renderZombies();
         modelBatch.end();
@@ -283,11 +242,72 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
         modelBatch.dispose();
         floorModel.dispose();
         zombieModel.dispose();
-        for (ModelInstance inst : wallInstances)
-            inst.model.dispose();
+        disposeWalls();
         shapes.dispose();
         batch.dispose();
         font.dispose();
+    }
+
+    // ═════════════════════════════════════════════════════════
+    //  MAP / WALLS
+    // ═════════════════════════════════════════════════════════
+
+    private void rebuildWalls() {
+        disposeWalls();
+        wallModels = new ModelInstance[BalanceConfig.MAP_SIZE][BalanceConfig.MAP_SIZE];
+        ModelBuilder mb = new ModelBuilder();
+
+        int[][] mapData = world.getMapData();
+        for (int y = 0; y < BalanceConfig.MAP_SIZE; y++) {
+            for (int x = 0; x < BalanceConfig.MAP_SIZE; x++) {
+                int tile = mapData[y][x];
+                if (tile == TILE_EMPTY) continue;
+
+                Color c;
+                switch (tile) {
+                    case TILE_WALL:    c = COLOR_WALL;    break;
+                    case TILE_BARRIER: c = COLOR_BARRIER; break;
+                    case TILE_DOOR:    c = COLOR_DOOR;    break;
+                    case TILE_WALLBUY: c = COLOR_WALLBUY; break;
+                    default:           c = COLOR_WALL;
+                }
+                Model box = mb.createBox(
+                        BalanceConfig.TILE_SIZE, BalanceConfig.TILE_SIZE, BalanceConfig.TILE_SIZE,
+                        new Material(ColorAttribute.createDiffuse(c)),
+                        VertexAttributes.Usage.Position
+                                | VertexAttributes.Usage.Normal
+                );
+                ModelInstance inst = new ModelInstance(box);
+                inst.transform.setToTranslation(
+                        x * BalanceConfig.TILE_SIZE + BalanceConfig.TILE_SIZE / 2f,
+                        BalanceConfig.TILE_SIZE / 2f,
+                        y * BalanceConfig.TILE_SIZE + BalanceConfig.TILE_SIZE / 2f
+                );
+                wallModels[y][x] = inst;
+            }
+        }
+    }
+
+    private void removeWallVisual(int tileX, int tileY) {
+        if (tileY < 0 || tileY >= BalanceConfig.MAP_SIZE ||
+            tileX < 0 || tileX >= BalanceConfig.MAP_SIZE) return;
+        ModelInstance inst = wallModels[tileY][tileX];
+        if (inst != null) {
+            inst.model.dispose();
+            wallModels[tileY][tileX] = null;
+        }
+    }
+
+    private void disposeWalls() {
+        if (wallModels != null) {
+            for (int y = 0; y < BalanceConfig.MAP_SIZE; y++) {
+                for (int x = 0; x < BalanceConfig.MAP_SIZE; x++) {
+                    if (wallModels[y][x] != null) {
+                        wallModels[y][x].model.dispose();
+                    }
+                }
+            }
+        }
     }
 
     // ═════════════════════════════════════════════════════════
@@ -359,14 +379,12 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
     private void updateCamera(float dt) {
         Player player = world.getPlayer();
 
-        // Position: player 2D (x,y) → 3D (x, z)
         camera.position.set(
                 player.getPosition().x,
                 BalanceConfig.PLAYER_HEIGHT,
                 player.getPosition().y
         );
 
-        // Direction from yaw/pitch
         float cosYaw = MathUtils.cosDeg(yaw);
         float sinYaw = MathUtils.sinDeg(yaw);
         float cosPitch = MathUtils.cosDeg(pitch);
@@ -380,7 +398,6 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
 
         camera.up.set(0f, 1f, 0f);
 
-        // ADS FOV interpolation
         float targetFov = adsPressed ? BalanceConfig.FOV_ADS : BalanceConfig.FOV_DEFAULT;
         fovCurrent += (targetFov - fovCurrent) * BalanceConfig.ADS_INTERP_SPEED * dt;
         camera.fieldOfView = fovCurrent;
@@ -509,5 +526,6 @@ public class SurvivalzGame extends ApplicationAdapter implements InputProcessor 
         pitch = 0f;
         fovCurrent = BalanceConfig.FOV_DEFAULT;
         world.reset();
+        rebuildWalls();
     }
 }

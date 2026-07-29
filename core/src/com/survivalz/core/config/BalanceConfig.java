@@ -35,7 +35,7 @@ public final class BalanceConfig {
 
     // ── Points ───────────────────────────────────────────────
     public static final int    POINTS_PER_HIT       = 10;
-    public static final int    POINTS_PER_KILL      = 60;
+    public static final int    POINTS_PER_KILL      = 100;
     public static final int    POINTS_PER_HEADSHOT   = 100;
     public static final int    POINTS_PER_BOARD     = 10;
 
