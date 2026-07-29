@@ -1,6 +1,5 @@
 package com.survivalz.core;
 
-import com.survivalz.core.config.GameConfig;
 
 /**
  * Fixed-timestep game loop.

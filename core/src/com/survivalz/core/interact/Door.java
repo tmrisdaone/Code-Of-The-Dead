@@ -6,13 +6,13 @@ import com.survivalz.core.config.BalanceConfig;
 /**
  * Opens a locked map zone when the player pays the point cost.
  */
-public class DoorBuy implements Interactable {
+public class Door implements Interactable {
     private final float x, y;
     private final int cost;
     private final String zoneId;
     private boolean unlocked = false;
 
-    public DoorBuy(float x, float y, int cost, String zoneId) {
+    public Door(float x, float y, int cost, String zoneId) {
         this.x = x;
         this.y = y;
         this.cost = cost;

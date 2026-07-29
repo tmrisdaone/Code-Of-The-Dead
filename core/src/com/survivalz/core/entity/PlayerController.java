@@ -36,7 +36,8 @@ public class PlayerController {
         if (!player.isAlive()) return;
 
         // Movement
-        player.update(deltaTime, moveX, moveY, aimX, aimY, firing);
+        player.setAimDirection(aimX, aimY);
+        player.update(deltaTime, moveX, moveY, firing);
 
         // Recoil recovery (handled in camera layer)
         if (recoilAccum > 0f) {

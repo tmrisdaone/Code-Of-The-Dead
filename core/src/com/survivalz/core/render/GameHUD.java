@@ -5,7 +5,7 @@ import com.survivalz.core.GameEvent;
 import com.survivalz.core.GameWorld;
 import com.survivalz.core.entity.Player;
 import com.survivalz.core.round.RoundManager;
-import com.survivalz.core.config.GameConfig;
+
 import com.survivalz.core.weapon.Weapon;
 import com.survivalz.core.weapon.WeaponSystem;
 
