@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.CodeOfTheDead" parent="Theme.Material3.DayNight.NoActionBar" />
+    <style name="Theme.CodeOfTheDead.Fullscreen" parent="Theme.CodeOfTheDead">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+</resources>

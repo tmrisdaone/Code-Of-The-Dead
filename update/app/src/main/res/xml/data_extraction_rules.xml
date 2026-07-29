@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dtd><![CDATA[<!DOCTYPE data-extraction-rules PUBLIC "-//Android//DTD Data Extraction Rules 1.0//EN" "http://schemas.android.com/apk/res/data-extraction-rules.dtd">]]></dtd>
+    <data-extraction-rules>
+        <cloud-backup>
+            <domain package="com.survivalz.host">
+                <include path="databases/*" />
+                <include path="shared_prefs/*" />
+            </domain>
+        </cloud-backup>
+        <device-transfer>
+            <domain package="com.survivalz.host">
+                <include path="databases/*" />
+                <include path="shared_prefs/*" />
+            </domain>
+        </device-transfer>
+    </data-extraction-rules>
+</resources>

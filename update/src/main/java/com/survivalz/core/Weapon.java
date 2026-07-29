@@ -1,3 +1,5 @@
+package com.survivalz.core;
+
 public class Weapon {
     private final String id;
     private final float fireInterval; // seconds between shots
@@ -20,6 +22,8 @@ public class Weapon {
     }
 
     public void refill() { ammo = maxAmmo; }
+    public String getId() { return id; }
     public int getAmmo() { return ammo; }
+    public int getMaxAmmo() { return maxAmmo; }
     public float getFireInterval() { return fireInterval; }
 }

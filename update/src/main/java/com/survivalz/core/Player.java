@@ -1,9 +1,11 @@
-import java.util.ArrayList;
+package com.survivalz.core;
+
 import java.util.HashMap;
+import java.util.ArrayList;
 
 public class Player {
-    private final Vector2 position = new Vector2();
-    private float aimAngle; // radians, where $$0$$ points along the positive $$x$$ axis
+    final Vector2 position = new Vector2();
+    private float aimAngle; // radians, 0 points along positive x axis
 
     private int health = 100;
     private static final int MAX_HEALTH = 100;
@@ -30,10 +32,10 @@ public class Player {
     public static final float INTERACT_RADIUS = 1.2f;
 
     /**
-     * @param moveX  normalized joystick x in $$[-1, 1]$$
-     * @param moveY  normalized joystick y in $$[-1, 1]$$
-     * @param aimX   aim vector x
-     * @param aimY   aim vector y
+     * @param moveX normalized joystick x in [-1, 1]
+     * @param moveY normalized joystick y in [-1, 1]
+     * @param aimX  aim vector x
+     * @param aimY  aim vector y
      */
     public void update(float deltaTime,
                        float moveX, float moveY,

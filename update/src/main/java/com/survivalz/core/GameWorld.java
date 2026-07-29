@@ -1,7 +1,9 @@
+package com.survivalz.core;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 
-public class GameWorld {
+public class GameWorld implements RoundManager.Spawner, RoundManager.Killer {
     private final Player player = new Player();
     private final RoundManager roundManager = new RoundManager();
     private final ObjectPool<Zombie> zombiePool;
@@ -13,7 +15,7 @@ public class GameWorld {
     private Interactable hoveredInteractable = null;
 
     public GameWorld() {
-        // Pre-warm pool: allocate $$8$$ up front, max $$32$$ in memory
+        // Pre-warm pool: allocate 8 up front, max 32 in memory
         zombiePool = new ObjectPool<Zombie>(8, 32) {
             @Override protected Zombie newObject() { return new Zombie(); }
         };
@@ -31,16 +33,19 @@ public class GameWorld {
             new RoundManager.SpawnPoint(10f, 10f),
             new RoundManager.SpawnPoint(22f, 8f)
         ));
+
+        // Wire NUKE support: round manager delegates kills back to this world.
+        roundManager.setKiller(this);
     }
 
-    /** Single entry point called by the game loop at $$60$$ Hz. */
+    /** Single entry point called by the game loop at 60 Hz. */
     public void update(float deltaTime, InputState input) {
         // 1. Player
         player.update(deltaTime, input.moveX, input.moveY,
                       input.aimX, input.aimY, input.firing);
 
         // 2. Round spawning (injects new zombies via callback)
-        roundManager.update(deltaTime, this::spawnZombie);
+        roundManager.update(deltaTime, this);
 
         // 3. Zombies (backwards iteration for safe removal)
         for (int i = zombies.size() - 1; i >= 0; i--) {
@@ -91,13 +96,33 @@ public class GameWorld {
                 powerups.remove(i);
             }
         }
+
+        // 6. Tick interactables that need per-frame updates (e.g. MysteryBox)
+        for (int i = 0, n = interactables.size(); i < n; i++) {
+            Interactable in = interactables.get(i);
+            if (in instanceof MysteryBox) {
+                ((MysteryBox) in).update(deltaTime);
+            }
+        }
     }
 
-    private void spawnZombie(float x, float y, int round,
-                             float hMult, float dMult, float sMult) {
+    @Override
+    public void spawn(float x, float y, int round,
+                      float hMult, float dMult, float sMult) {
         Zombie z = zombiePool.obtain();
         z.spawn(x, y, round, hMult, dMult, sMult);
         zombies.add(z);
+    }
+
+    /** NUKE: kill every active zombie. Called by RoundManager via the Killer hook. */
+    @Override
+    public void killAll() {
+        for (int i = zombies.size() - 1; i >= 0; i--) {
+            Zombie z = zombies.get(i);
+            if (z.isActive()) {
+                z.takeDamage(z.health);
+            }
+        }
     }
 
     /** Called by bullet/raycast system when a shot lands. */

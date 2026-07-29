@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dtd><![CDATA[<!DOCTYPE full-backup-rules PUBLIC "-//Android//DTD Full Backup Rules 1.0//EN" "http://schemas.android.com/apk/res/full-backup-rules.dtd">]]></dtd>
+    <full-backup-rules>
+        <include domain="database" path="*" />
+        <include domain="sharedpref" path="*" />
+        <exclude domain="database" path="androidx.lifecycle.preferences" />
+    </full-backup-rules>
+</resources>
