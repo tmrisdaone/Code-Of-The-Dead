@@ -28,7 +28,7 @@ class GameSurfaceView @JvmOverloads constructor(
     GameInputPoll,
     GameRenderer {
 
-    private val holder = getHolder().apply { addCallback(this) }
+    private val holder = getHolder().apply { addCallback(this@GameSurfaceView) }
     private val renderThread = RenderThread()
 
     // Core world & loop
