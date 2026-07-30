@@ -57,4 +57,5 @@ public class Zombie {
     public Vector2 getPosition() { return position; }
     public int getHealth() { return health; }
     public int getMaxHealth() { return maxHealth; }
+    public float getRadius() { return radius; }
 }
