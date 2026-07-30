@@ -36,6 +36,24 @@ public class GameWorld implements RoundManager.Spawner, RoundManager.Killer {
 
         // Wire NUKE support: round manager delegates kills back to this world.
         roundManager.setKiller(this);
+
+        // Populate the map's interactables: doors, wall-buys, and the mystery box.
+        registerMapInteractables();
+    }
+
+    /** Lays out the doors, wall-buys and mystery box for the default map. */
+    private void registerMapInteractables() {
+        // Doors unlock new zones.
+        interactables.add(new DoorBuy( 5f,  0f, 750,  "zone_a"));
+        interactables.add(new DoorBuy(-5f,  0f, 1000, "zone_b"));
+        // Wall-buys: buy the weapon once, then refill ammo.
+        interactables.add(new WallBuy( 3f,  3f, "m14",  500, 250));
+        interactables.add(new WallBuy(-3f, -3f, "mp40", 1000, 500));
+        interactables.add(new WallBuy( 6f, -2f, "stg44", 1500, 750));
+        // Mystery box: random weapon from loot table for 950 pts.
+        interactables.add(new MysteryBox(0f, 6f, java.util.Arrays.asList(
+            "m14", "mp40", "stg44", "raygun"
+        )));
     }
 
     /** Single entry point called by the game loop at 60 Hz. */
@@ -43,6 +61,15 @@ public class GameWorld implements RoundManager.Spawner, RoundManager.Killer {
         // 1. Player
         player.update(deltaTime, input.moveX, input.moveY,
                       input.aimX, input.aimY, input.firing);
+
+        // 1b. Fire: consume a shot (ammo + fire-rate gating lives in Player)
+        //     and apply a hit-scan to the nearest zombie in the aim cone.
+        if (input.firing) {
+            Weapon fired = player.consumeShot();
+            if (fired != null) {
+                firingPlayerWeapon(fired);
+            }
+        }
 
         // 2. Round spawning (injects new zombies via callback)
         roundManager.update(deltaTime, this);
@@ -122,6 +149,50 @@ public class GameWorld implements RoundManager.Spawner, RoundManager.Killer {
             if (z.isActive()) {
                 z.takeDamage(z.health);
             }
+        }
+    }
+
+    /**
+     * Hit-scan a single shot from the player's current weapon: applies damage to
+     * the nearest active zombie within {@code FIRE_RANGE} that lies inside the
+     * aim cone, awarding points on hit/kill. Called once per consumed shot.
+     */
+    private void firingPlayerWeapon(Weapon fired) {
+        final float FIRE_RANGE = 20f;            // world units
+        final float FIRE_RANGE2 = FIRE_RANGE * FIRE_RANGE;
+        final float MIN_DOT = 0.5f;               // ~60° half-cone in front of aim
+
+        float aimX = (float) Math.cos(player.getAimAngle());
+        float aimY = (float) Math.sin(player.getAimAngle());
+        float px = player.getPosition().x;
+        float py = player.getPosition().y;
+
+        Zombie target = null;
+        float bestD2 = Float.MAX_VALUE;
+        for (int i = 0; i < zombies.size(); i++) {
+            Zombie z = zombies.get(i);
+            if (!z.isActive()) continue;
+            float dx = z.position.x - px;
+            float dy = z.position.y - py;
+            float d2 = dx * dx + dy * dy;
+            if (d2 > FIRE_RANGE2 || d2 >= bestD2) continue;
+            float inv = 1f / (float) Math.sqrt(d2);
+            if (dx * aimX * inv + dy * aimY * inv < MIN_DOT) continue;
+            target = z;
+            bestD2 = d2;
+        }
+
+        if (target == null) return;
+
+        boolean headshot = Math.random() < 0.25;
+        boolean wasAlive = target.isActive();
+        damageZombie(target, fired.getDamage(), headshot);
+
+        // Award points on the hit itself; kill points are awarded in the
+        // death-reap loop (step 3) to keep the economy single-sourced.
+        boolean nowDead = !target.isActive();
+        if (wasAlive && !nowDead) {
+            player.addPoints(headshot ? 100 : 10); // hit score; headshots pay more
         }
     }
 

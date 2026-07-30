@@ -19,6 +19,11 @@ public class Player {
     private final ArrayList<String> weaponSlots = new ArrayList<>();
     private int currentSlot = 0;
 
+    public Player() {
+        // Issue the starter M1911 so the player can fight from round 1.
+        addWeapon("m1911");
+    }
+
     // Combat
     private float fireTimer = 0f;
 
@@ -53,14 +58,21 @@ public class Player {
         }
 
         if (fireTimer > 0f) fireTimer -= deltaTime;
+    }
 
-        if (firing && fireTimer <= 0f) {
-            Weapon w = getCurrentWeapon();
-            if (w != null && w.consumeAmmo(1)) {
-                fireTimer = w.getFireInterval();
-                // In a full engine, fire a pooled Ray/Bullet here.
-            }
-        }
+    /**
+     * Attempts to fire the current weapon this frame.
+     * @return the Weapon that fired, or null if no shot was taken
+     *         (no weapon, fire-rate gated, or out of ammo).
+     *         The world then performs the hit-scan with the returned stats.
+     */
+    public Weapon consumeShot() {
+        if (fireTimer > 0f) return null;
+        Weapon w = getCurrentWeapon();
+        if (w == null) return null;
+        if (!w.consumeAmmo(1)) return null;
+        fireTimer = w.getFireInterval();
+        return w;
     }
 
     public void applyDamage(int dmg) {
@@ -94,11 +106,23 @@ public class Player {
     public boolean hasWeapon(String id) { return arsenal.containsKey(id); }
 
     public void addWeapon(String id) {
-        if (!hasWeapon(id)) {
-            // Factory lookup omitted for brevity; supply real stats here.
-            arsenal.put(id, new Weapon(id, 0.15f, 30, 300));
-            weaponSlots.add(id);
-            currentSlot = weaponSlots.size() - 1;
+        if (hasWeapon(id)) return;
+        Weapon w = createWeapon(id);
+        if (w == null) return; // unknown id — ignore rather than produce junk
+        arsenal.put(id, w);
+        weaponSlots.add(id);
+        currentSlot = weaponSlots.size() - 1;
+    }
+
+    /** Catalog of buyable weapons; mirrored on the wall-buy / mystery-box loot tables. */
+    private static Weapon createWeapon(String id) {
+        switch (id) {
+            case "m1911": return new Weapon("m1911", 0.18f,  8,  80,  50); // pistol (starter)
+            case "m14":   return new Weapon("m14",   0.30f,  8,  96, 120); // semi rifle
+            case "mp40":  return new Weapon("mp40",  0.10f, 32, 256,  70); // SMG
+            case "stg44": return new Weapon("stg44", 0.12f, 30, 240, 110); // AR
+            case "raygun":return new Weapon("raygun",0.22f, 20, 200, 600); // wonder weapon
+            default: return null;
         }
     }
 
