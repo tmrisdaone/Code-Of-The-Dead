@@ -1,354 +1,334 @@
 package com.codzombies;
 
-import com.badlogic.gdx.math.Intersector;
 import com.badlogic.gdx.math.Vector3;
-import com.badlogic.gdx.math.collision.Ray;
+import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.Pool;
 
 /**
- * Manages all zombie entities: wave spawning, AI update, hit detection.
- * Uses ObjectPool<Zombie> — zero allocations in hot paths.
+ * Owns the wave lifecycle, zombie pool, and per-zombie AI steering + melee.
+ * Also resolves the player's hitscan Shot against active zombies (ray vs AABB).
+ *
+ * Round model (COD Zombies-style):
+ *   - Round 1: zombiesForRound(1) = 18 spawned gradually across the round.
+ *   - Each round increases count per the wiki formula (see Constants),
+ *     and health/speed scale mildly. Round N completes when all spawned
+ *     zombies are dead and the spawn budget is exhausted.
+ *
+ * The manager is pure model: it does no rendering. The GameScreen reads
+ * zombies() each frame to render instances, and feeds the manager back
+ * kill events and damage events.
  */
 public class ZombieManager {
 
-    private final ObjectPool<Zombie> zombiePool;
-    private final ObjectPool<Bullet> bulletPool;
+    // ── Per-zombie entity (pooled — no GC churn during gameplay) ──
+    /** A single zombie. Package-visible fields so the manager can mutate it cheaply. */
+    public static final class Zombie implements Pool.Poolable {
+        public final Vector3 position = new Vector3();
+        public float health;
+        public float speed;
+        public float attackTimer;   // cooldown remaining before next melee swing
+        public boolean alive;       // in-play and not yet killed
 
-    // ── Wave state ───────────────────────────────────────────
-    public  int     currentRound = 0;
-    private int     zombiesSpawnedThisRound = 0;
-    private int     zombiesToSpawnThisRound = 0;
-    private float   spawnTimer  = 0f;
-    private float   interSpawnDelay = 1.5f;
-    private boolean roundActive = false;
-    private boolean roundTransition = false;
-    public  float   roundTransitionTimer = 0f;
+        // Hit-flash alpha for the renderer (decays to 0).
+        public float hitFlash;
 
-    // ── Spawn nodes (pre-defined positions around map edge) ──
-    private static final float[][] SPAWN_NODES = {
-            { -10f, -10f }, { -10f, 10f }, { 10f, -10f }, { 10f, 10f },
-            { -8f, -12f },  { 8f, -12f },  { -12f, 8f },  { 12f, 8f },
-            { -15f, 0f },   { 15f, 0f },   { 0f, -15f },  { 0f, 15f }
+        Zombie() { reset(); }
+
+        @Override public void reset() {
+            position.set(0f, 0f, 0f);
+            health = 0f;
+            speed  = 0f;
+            attackTimer = 0f;
+            alive = false;
+            hitFlash = 0f;
+        }
+
+        public void spawn(Vector3 p, float hp, float sp) {
+            position.set(p);
+            health = hp;
+            speed  = sp;
+            attackTimer = 1f;     // brief delay before the first swing
+            alive = true;
+            hitFlash = 0f;
+        }
+
+        /** Advance AI by dt. Pure steering toward the player; no pathing yet. */
+        public void updateAI(float dt, Vector3 playerPos) {
+            if (!alive) return;
+
+            // Decay hit-flash regardless of state.
+            if (hitFlash > 0f) hitFlash = Math.max(0f, hitFlash - dt * 4f);
+
+            Vector3 toPlayer = tmp.set(playerPos).sub(position);
+            float len = toPlayer.len();
+            if (len < 0.0001f) return;
+
+            // If within melee range, stop moving and damage the player
+            // via the callback (the GameScreen wires player.takeDamage).
+            if (len <= Constants.ZOMBIE_ATTACK_RANGE) {
+                // (Melee handled by the manager, not here, to avoid a
+                // back-reference Player inside Zombie.)
+                return;
+            }
+
+            // Steer: move at `speed` straight toward the player along the XZ plane.
+            // Y is kept at 0 (zombies walk on the floor).
+            float nx = toPlayer.x / len;
+            float nz = toPlayer.z / len;
+            float stepZ = speed * dt;
+            position.x += nx * stepZ;
+            position.z += nz * stepZ;
+            position.y  = 0f;
+        }
+    }
+
+    // ── Scratch vector (reused inside Zombie.updateAI to avoid per-frame allocs) ──
+    private static final Vector3 tmp = new Vector3();
+
+    // ── Pools + collections (LibGDX collections, zero-alloc iteration) ──
+    private final Pool<Zombie> pool = new Pool<Zombie>(Constants.ZOMBIE_MAX_POOL) {
+        @Override protected Zombie newObject() { return new Zombie(); }
     };
+    /** Active (in-play) zombies. There may also be dead-but-not-yet-reaped zombies briefly. */
+    private final Array<Zombie> zombies = new Array<>(true, 32, Zombie.class);
 
-    // ── Player reference ────────────────────────────────────
-    private final PlayerController player;
+    /** Melee callback so Zombie doesn't need a Player reference. */
+    public interface MeleeSink { void onZombieMelee(float damage); }
 
-    // ── Temp vectors (no alloc) ──────────────────────────────
-    private final Vector3 tmpDir  = new Vector3();
-    private final Vector3 tmpPos  = new Vector3();
-    private final Vector3 tmpHit  = new Vector3();
+    // ── Round / spawning state ──
+    private int  round      = 0;
+    private int  toSpawn    = 0;    // zombies still to spawn this round
+    private int  aliveCount = 0;    // currently alive (drives round completion)
+    private float spawnTimer = 0f;  // inter-spawn delay accumulator
+    private float roundInterlude = 0f;  // delay between rounds
 
-    // ── Hit result (reused) ──────────────────────────────────
-    public static class HitResult {
-        public boolean hit;
-        public boolean headshot;
-        public int     zombieIndex;
-        public float   damage;
-        public float   distance;
+    /** Spawns are picked from these world positions (edge of the arena). */
+    private final Array<Vector3> spawnPoints = new Array<>(true, 8, Vector3.class);
+
+    public ZombieManager() {
+        addSpawnPoint(new Vector3(-22f,  0f, -22f));
+        addSpawnPoint(new Vector3( 22f,  0f, -22f));
+        addSpawnPoint(new Vector3(-22f,  0f,  22f));
+        addSpawnPoint(new Vector3( 22f,  0f,  22f));
+        addSpawnPoint(new Vector3(  0f,  0f, -24f));
     }
 
-    private final HitResult reusableHit = new HitResult();
+    public void addSpawnPoint(Vector3 p) { spawnPoints.add(new Vector3(p)); }
 
-    // ── Internal zombie count tracking ───────────────────────
-    public int aliveCount = 0;
-    public int totalKills = 0;
-
-    public ZombieManager(PlayerController player) {
-        this.player = player;
-        this.zombiePool = new ObjectPool<>(Constants.ZOMBIE_MAX_POOL, Zombie::new);
-        this.bulletPool = new ObjectPool<>(32, Bullet::new);
-    }
-
-    // ── Main update ──────────────────────────────────────────
-    public void update(float dt) {
-        if (dt > Constants.DELTA_MAX) dt = Constants.DELTA_MAX;
-        final float dtFinal = dt; // effectively final for lambdas
-
-        // Round transition countdown
-        if (roundTransition) {
-            roundTransitionTimer -= dt;
-            if (roundTransitionTimer <= 0f) {
-                roundTransition = false;
-                startRound();
-            }
-            return; // pause all zombie activity during transition
-        }
-
-        // Spawn logic
-        if (roundActive && zombiesSpawnedThisRound < zombiesToSpawnThisRound) {
-            spawnTimer -= dt;
-            if (spawnTimer <= 0f) {
-                spawnZombie();
-                // Spawn faster as rounds progress
-                interSpawnDelay = Math.max(0.3f, 1.5f - currentRound * 0.02f);
-                spawnTimer = interSpawnDelay;
-            }
-        }
-
-        // Update all zombies
-        aliveCount = 0;
-        zombiePool.forEachActive((zombie, index) -> {
-            if (zombie.isDead()) {
-                zombie.deathTimer -= dtFinal;
-                if (zombie.deathTimer <= 0f) {
-                    zombiePool.freeIndex(index);
-                }
-                return;
-            }
-
-            // Hit flash timer
-            if (zombie.hitFlashTimer > 0f) zombie.hitFlashTimer -= dtFinal;
-
-            switch (zombie.state) {
-                case Zombie.STATE_SPAWNING:
-                    zombie.spawnTimer -= dtFinal;
-                    if (zombie.spawnTimer <= 0f) {
-                        zombie.state = Zombie.STATE_PURSUING;
-                    }
-                    break;
-
-                case Zombie.STATE_PURSUING:
-                    updatePursuit(zombie, dtFinal);
-                    break;
-
-                case Zombie.STATE_ATTACKING:
-                    updateAttack(zombie, dtFinal);
-                    break;
-            }
-
-            aliveCount++;
-        });
-
-        // Update bullets
-        bulletPool.forEachActive((bullet, index) -> {
-            bullet.lifetime -= dtFinal;
-            if (bullet.lifetime <= 0f) {
-                bulletPool.freeIndex(index);
-                return;
-            }
-            bullet.position.x += bullet.direction.x * bullet.speed * dtFinal;
-            bullet.position.y += bullet.direction.y * bullet.speed * dtFinal;
-            bullet.position.z += bullet.direction.z * bullet.speed * dtFinal;
-
-            // Splash damage check
-            if (bullet.splashRadius > 0f) {
-                zombiePool.forEachActive((zom, zi) -> {
-                    if (!zom.isActive()) return;
-                    float d2 = zom.dist2To(bullet.position.x, bullet.position.z);
-                    if (d2 <= bullet.splashRadius * bullet.splashRadius) {
-                        zom.health -= bullet.damage * 0.5f;
-                        zom.hitFlashTimer = 0.1f;
-                        if (zom.health <= 0f) {
-                            zom.kill();
-                            player.addPoints(Constants.POINTS_PER_KILL);
-                            player.zombieKills++;
-                            totalKills++;
-                        }
-                    }
-                });
-                bulletPool.freeIndex(index);
-            }
-        });
-
-        // Check round complete
-        if (roundActive && aliveCount == 0 &&
-                zombiesSpawnedThisRound >= zombiesToSpawnThisRound) {
-            roundActive = false;
-            // Automatically start next round after delay
-            signalNextRound();
-        }
-    }
-
-    // ── Round management ─────────────────────────────────────
-
-    public void signalNextRound() {
-        if (roundActive || roundTransition) return;
-        currentRound++;
-        zombiesToSpawnThisRound = Constants.zombieCountForRound(currentRound);
-        zombiesSpawnedThisRound = 0;
-        roundTransition = true;
-        roundTransitionTimer = 3.0f; // "ROUND X" display duration
-    }
-
-    public void startRound() {
-        roundActive = true;
-        spawnTimer = 0f; // spawn first zombie immediately
-    }
-
-    public boolean isRoundActive() {
-        return roundActive;
-    }
-
-    public boolean isRoundTransition() {
-        return roundTransition;
-    }
-
-    // ── Hit-scan ─────────────────────────────────────────────
+    // =================================================================
+    //  MAIN UPDATE
+    // =================================================================
 
     /**
-     * Raycast from camera to find closest zombie hit.
-     * Returns reusable HitResult (valid only until next call).
+     * Advance the wave sim by dt.
+     * @param playerPos Live player world position (for AI steering + melee range).
+     * @param melee    Sink that takes damage when a zombie melees the player.
      */
-    public HitResult raycastHit(Vector3 origin, Vector3 direction,
-                                 float maxRange, float headshotHeight) {
-        reusableHit.hit = false;
-        reusableHit.headshot = false;
-        reusableHit.zombieIndex = -1;
-        reusableHit.damage = 0f;
-        reusableHit.distance = maxRange;
+    public void update(float dt, Vector3 playerPos, MeleeSink melee) {
+        // ── Begin the first round immediately on the very first update ──
+        if (round == 0 && toSpawn == 0 && aliveCount == 0) {
+            startNextRound();
+            return;       // start round 1; begin spawning next frame
+        }
 
-        zombiePool.forEachActive((zombie, index) -> {
-            if (!zombie.isActive()) return;
+        // ── Interlude between rounds ──
+        // While the breather is active, count it down. When it expires we
+        // start the next round and immediately return so we don't also
+        // spawn+simulate on the same frame the round flips.
+        if (roundInterlude > 0f) {
+            roundInterlude -= dt;
+            if (roundInterlude <= 0f) {
+                roundInterlude = 0f;
+                startNextRound();
+            }
+            return;                        // freeze spawning/AI during the breather
+        }
 
-            // Simple bounding-sphere intersection
-            // Body: radius 0.4 units at zombie position
-            // Head: radius 0.2 units at zombie position + headshotHeight Y
-            tmpPos.set(zombie.position);
+        // ── Spawn pacing ──
+        if (toSpawn > 0) {
+            // Spawn delay shrinks as rounds progress, but never below 0.4s,
+            // so the player isn't swarmed all at once even late game.
+            float delay = Math.max(0.4f, 2.2f - round * 0.07f);
+            spawnTimer += dt;
+            if (spawnTimer >= delay) {
+                spawnOne(playerPos);
+                spawnTimer = 0f;
+            }
+        }
 
-            // Body check
-            float dist2 = tmpPos.dst2(origin);
-            if (dist2 > maxRange * maxRange) return;
+        // ── AI + melee (backwards so we can free on death) ──
+        float meleeRangeSq = Constants.ZOMBIE_ATTACK_RANGE * Constants.ZOMBIE_ATTACK_RANGE;
+        for (int i = zombies.size - 1; i >= 0; i--) {
+            Zombie z = zombies.get(i);
+            if (!z.alive) continue;
 
-            tmpDir.set(tmpPos).sub(origin).nor();
-            float dot = tmpDir.dot(direction);
-            if (dot < 0.85f) return; // not in crosshair cone
+            z.updateAI(dt, playerPos);
 
-            float distance = origin.dst(tmpPos);
-            if (distance < reusableHit.distance && distance < maxRange) {
-                reusableHit.hit = true;
-                reusableHit.zombieIndex = index;
-                reusableHit.distance = distance;
-
-                // Headshot check: if aim is above body center
-                float aimHeight = origin.y - tmpPos.y;
-                reusableHit.headshot = (aimHeight > headshotHeight);
-                reusableHit.damage = reusableHit.headshot ? 2.0f : 1.0f;
-
-                // Apply damage immediately
-                Weapon wep = player.weaponSystem != null
-                        ? player.weaponSystem.getActiveWeapon() : null;
-                float dmg = (wep != null) ? wep.damage : 25f;
-                if (reusableHit.headshot) dmg *= 2.0f;
-
-                zombie.health -= dmg;
-                zombie.hitFlashTimer = 0.1f;
-
-                if (zombie.health <= 0f) {
-                    zombie.kill();
-                    player.addPoints(reusableHit.headshot
-                            ? Constants.POINTS_PER_HEADSHOT
-                            : Constants.POINTS_PER_KILL);
-                    if (reusableHit.headshot) player.headshots++;
-                    player.zombieKills++;
-                    totalKills++;
+            // Melee if the zombie reached the player.
+            float dx = z.position.x - playerPos.x;
+            float dz = z.position.z - playerPos.z;
+            if (dx * dx + dz * dz <= meleeRangeSq) {
+                if (z.attackTimer <= 0f) {
+                    melee.onZombieMelee(Constants.ZOMBIE_ATTACK_DAMAGE);
+                    z.attackTimer = Constants.ZOMBIE_ATTACK_COOLDOWN;
                 }
             }
-        });
+            if (z.attackTimer > 0f) z.attackTimer -= dt;
 
-        return reusableHit.hit ? reusableHit : null;
+            // Reap dead zombies
+            if (z.health <= 0f) {
+                z.alive = false;
+                zombies.removeIndex(i);
+                pool.free(z);
+                aliveCount = Math.max(0, aliveCount - 1);
+            }
+        }
+
+        // ── Round completion: all zombies dead and spawn budget spent ──
+        if (toSpawn == 0 && aliveCount == 0) {
+            roundInterlude = 4f;     // breather; interlude block above starts next round
+        }
     }
 
-    // ── Bullet spawn ─────────────────────────────────────────
-    public boolean spawnBullet(float px, float py, float pz,
-                                float dx, float dy, float dz,
-                                float speed, float damage,
-                                float splashRadius, float lifetime) {
-        Bullet b = bulletPool.obtain();
-        if (b == null) return false;
-        b.set(px, py, pz, dx, dy, dz, speed, damage, splashRadius, lifetime);
-        return true;
+    private void startNextRound() {
+        round++;
+        toSpawn    = Constants.zombieCountForRound(round);
+        aliveCount = 0;
+        spawnTimer = 0f;
     }
 
-    // ── Zombie accessors ─────────────────────────────────────
-    public ObjectPool<Zombie> getZombiePool() { return zombiePool; }
+    /** Pick a random spawn point and summon one zombie scaled to the current round. */
+    private void spawnOne(Vector3 playerPos) {
+        // Choose the spawn farthest from the player — COD prefers giving the
+        // player a beat before the new zombie arrives.
+        Vector3 spawn = spawnPoints.first();
+        float bestSq = -1f;
+        for (int i = 0; i < spawnPoints.size; i++) {
+            Vector3 p = spawnPoints.get(i);
+            float dx = p.x - playerPos.x;
+            float dz = p.z - playerPos.z;
+            float sq = dx * dx + dz * dz;
+            if (sq > bestSq) { bestSq = sq; spawn = p; }
+        }
 
-    public int getZombieCount() { return aliveCount; }
-    public int getCurrentRound() { return currentRound; }
+        float hp = Constants.zombieHealthForRound(round);
+        float sp = Constants.ZOMBIE_SPEED * (1f + 0.03f * Math.max(0, round - 1)); // mild ramp
+
+        Zombie z = pool.obtain();
+        z.spawn(spawn, hp, sp);
+        zombies.add(z);
+        toSpawn--;
+        aliveCount++;
+    }
+
+    // =================================================================
+    //  HITSCAN
+    // =================================================================
+
+    /**
+     * Resolve a hitscan ray against all alive zombies.
+     * Standard ray-vs-AABB (slabs method). Returns the closest hit or null.
+     * Does not apply damage — the GameScreen decides points/headshot bonus.
+     *
+     * Math (slabs method):
+     *   For each axis, compute t where the ray enters/exits the slab
+     *   [bbox.min, bbox.max]. The ray hits the box iff
+     *   max(tminX, tminY, tminZ) <= min(tmaxX, tmaxY, tmaxZ) and that
+     *   value is in front of the camera (>= 0).
+     */
+    public Zombie raycastZombie(Vector3 origin, Vector3 dir) {
+        Zombie hit = null;
+        float bestT = Float.MAX_VALUE;
+
+        // Zombie half-extents (box centered on position; stand on floor)
+        final float halfW = 0.4f;
+        final float halfH = 0.9f;
+
+        for (int i = 0; i < zombies.size; i++) {
+            Zombie z = zombies.get(i);
+            if (!z.alive) continue;
+
+            // AABB for this zombie
+            float minX = z.position.x - halfW, maxX = z.position.x + halfW;
+            float minY = z.position.y,          maxY = z.position.y + 2f * halfH; // height ~1.8
+            float minZ = z.position.z - halfW, maxZ = z.position.z + halfW;
+
+            float tmin = 0f, tmax = Float.MAX_VALUE;
+
+            // X slab
+            if (Math.abs(dir.x) < 1e-6f) {
+                if (origin.x < minX || origin.x > maxX) continue;
+            } else {
+                float t1 = (minX - origin.x) / dir.x;
+                float t2 = (maxX - origin.x) / dir.x;
+                if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+                tmin = Math.max(tmin, t1);
+                tmax = Math.min(tmax, t2);
+                if (tmin > tmax) continue;
+            }
+            // Y slab
+            if (Math.abs(dir.y) < 1e-6f) {
+                if (origin.y < minY || origin.y > maxY) continue;
+            } else {
+                float t1 = (minY - origin.y) / dir.y;
+                float t2 = (maxY - origin.y) / dir.y;
+                if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+                tmin = Math.max(tmin, t1);
+                tmax = Math.min(tmax, t2);
+                if (tmin > tmax) continue;
+            }
+            // Z slab
+            if (Math.abs(dir.z) < 1e-6f) {
+                if (origin.z < minZ || origin.z > maxZ) continue;
+            } else {
+                float t1 = (minZ - origin.z) / dir.z;
+                float t2 = (maxZ - origin.z) / dir.z;
+                if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+                tmin = Math.max(tmin, t1);
+                tmax = Math.min(tmax, t2);
+                if (tmin > tmax) continue;
+            }
+
+            // tmin is the entry distance. Negative means we are inside the slab,
+            // i.e. closest face is behind us — accept tmin clipped to >= 0.
+            float t = Math.max(0f, tmin);
+            if (t < bestT) {
+                bestT = t;
+                hit = z;
+            }
+        }
+        return hit;
+    }
+
+    /** Apply damage to a zombie from a hit; returns true if the hit killed it. */
+    public boolean damageZombie(Zombie z, float dmg) {
+        if (z == null || !z.alive) return false;
+        z.health -= dmg;
+        z.hitFlash = 1f;
+        return z.health <= 0f;
+    }
+
+    // ── Scratch vector (reused inside updateAI to avoid per-frame allocs) ──
+
+    // =================================================================
+    //  ACCESSORS / RESET
+    // =================================================================
+    public Array<Zombie> zombies() { return zombies; }
+    public int getRound()          { return round; }
+    public int getAliveCount()     { return aliveCount; }
+    public int getToSpawn()        { return toSpawn; }
+    public float getInterlude()    { return roundInterlude; }
 
     public void reset() {
-        // Free all zombies
-        for (int i = 0; i < zombiePool.capacity(); i++) {
-            zombiePool.freeIndex(i);
+        for (Zombie z : zombies) {
+            z.alive = false;
+            pool.free(z);
         }
-        for (int i = 0; i < bulletPool.capacity(); i++) {
-            bulletPool.freeIndex(i);
-        }
-        currentRound = 0;
-        zombiesSpawnedThisRound = 0;
-        zombiesToSpawnThisRound = 0;
-        roundActive = false;
-        roundTransition = false;
-        roundTransitionTimer = 0f;
+        zombies.clear();
+        round = 0;
+        toSpawn = 0;
         aliveCount = 0;
-        totalKills = 0;
-    }
-
-    // ── Private ──────────────────────────────────────────────
-
-    private void spawnZombie() {
-        Zombie z = zombiePool.obtain();
-        if (z == null) return; // pool full — wait for deaths
-
-        // Pick a random spawn node that's far enough from player
-        float px = player.position.x;
-        float pz = player.position.z;
-        float sx, sz;
-        int attempts = 0;
-        do {
-            int idx = (int)(Math.random() * SPAWN_NODES.length);
-            sx = SPAWN_NODES[idx][0];
-            sz = SPAWN_NODES[idx][1];
-            attempts++;
-        } while (attempts < 10 && (sx - px) * (sx - px) + (sz - pz) * (sz - pz) < 25f);
-
-        float health = Constants.zombieHealthForRound(currentRound);
-        float speed  = Constants.ZOMBIE_SPEED + currentRound * 0.02f; // slightly faster each round
-        z.init(sx, sz, health, speed);
-        zombiesSpawnedThisRound++;
-    }
-
-    private void updatePursuit(Zombie zombie, float dt) {
-        // Vector toward player
-        float dx = player.position.x - zombie.position.x;
-        float dz = player.position.z - zombie.position.z;
-        float dist = (float) Math.sqrt(dx * dx + dz * dz);
-
-        if (dist < 0.01f) return;
-
-        // Move toward player
-        zombie.velocity.x = (dx / dist) * zombie.speed;
-        zombie.velocity.z = (dz / dist) * zombie.speed;
-
-        zombie.position.x += zombie.velocity.x * dt;
-        zombie.position.z += zombie.velocity.z * dt;
-
-        // Animation
-        zombie.bobPhase += dt * 4f;
-
-        // Check attack range
-        if (dist < Constants.ZOMBIE_ATTACK_RANGE) {
-            zombie.state = Zombie.STATE_ATTACKING;
-            zombie.attackCooldown = 0f;
-        }
-    }
-
-    private void updateAttack(Zombie zombie, float dt) {
-        zombie.attackCooldown -= dt;
-
-        // Check if player moved out of range
-        float dx = player.position.x - zombie.position.x;
-        float dz = player.position.z - zombie.position.z;
-        float dist = (float) Math.sqrt(dx * dx + dz * dz);
-
-        if (dist > Constants.ZOMBIE_ATTACK_RANGE * 1.2f) {
-            zombie.state = Zombie.STATE_PURSUING;
-            return;
-        }
-
-        // Attack on cooldown
-        if (zombie.attackCooldown <= 0f) {
-            player.takeDamage(zombie.damagePerHit);
-            zombie.attackCooldown = Constants.ZOMBIE_ATTACK_COOLDOWN;
-        }
+        spawnTimer = 0f;
+        roundInterlude = 0f;
     }
 }

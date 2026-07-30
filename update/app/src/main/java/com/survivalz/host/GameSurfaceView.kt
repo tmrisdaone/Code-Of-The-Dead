@@ -5,12 +5,15 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.util.AttributeSet
-import android.util.Log
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import com.survivalz.core.*
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * Android SurfaceView host that implements the core's GameInputPoll and GameRenderer
@@ -25,7 +28,7 @@ class GameSurfaceView @JvmOverloads constructor(
     GameInputPoll,
     GameRenderer {
 
-    private val holder = holder.apply { addCallback(this) }
+    private val holder = getHolder().apply { addCallback(this@GameSurfaceView) }
     private val renderThread = RenderThread()
 
     // Core world & loop
@@ -42,7 +45,7 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // Input state (polled on render thread, consumed on sim thread)
     private val inputState = AtomicReference(GameWorld.InputState())
-    private val pendingInput = GameWorld.InputState()
+    private var pendingInput = GameWorld.InputState()
     private val touchDown = BooleanArray(10)
     private val touchX = FloatArray(10)
     private val touchY = FloatArray(10)
@@ -103,8 +106,8 @@ class GameSurfaceView @JvmOverloads constructor(
         for (z in world.zombies) {
             if (!z.isActive()) continue
             debugRect.set(
-                z.position.x - z.radius, z.position.y - z.radius,
-                z.position.x + z.radius, z.position.y + z.radius
+                z.position.x - z.getRadius(), z.position.y - z.getRadius(),
+                z.position.x + z.getRadius(), z.position.y + z.getRadius()
             )
             canvas.drawRect(debugRect, paint)
         }
@@ -280,7 +283,7 @@ class GameSurfaceView @JvmOverloads constructor(
         override fun run() {
             while (running) {
                 val now = System.nanoTime()
-                val dt = (now - lastTime) / 1_000_000_000.0
+                val dt = ((now - lastTime) / 1_000_000_000.0).toFloat()
                 lastTime = now
 
                 if (dt > 0.25) continue // spiral of death guard

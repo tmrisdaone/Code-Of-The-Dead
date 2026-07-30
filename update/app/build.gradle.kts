@@ -29,9 +29,8 @@ android {
         jvmTarget = "17"
     }
     sourceSets {
-        main {
+        getByName("main") {
             java {
-                // Include the core package from the sibling source set
                 srcDirs("../src/main/java")
             }
         }
